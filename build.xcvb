@@ -1,0 +1,24 @@
+;;; -*- mode: lisp -*-
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;                                                                  ;;;
+;;; Free Software under an MIT-style license. See poiu.lisp.         ;;;
+;;;                                                                  ;;;
+;;; Copyright (c) 2001-2009 Daniel Barlow and contributors           ;;;
+;;;                                                                  ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+#+xcvb
+(module
+ (:fullname "poiu"
+  :author ("Daniel Barlow" "Andreas Fuchs" "Francois-Rene Rideau")
+  :maintainer "Francois-Rene Rideau"
+  :licence "MIT" ;; MIT-style license, same as ASDF. See poiu.lisp
+  :description "POIU"
+  :long-description "Parallel Operator on Independent Units
+POIU is a variant of ASDF that may operate on your systems in parallel.
+POIU will notably compile each Lisp file in its own forked process,
+in parallel with other operations (compilation or loading). However,
+it will load FASLs serially as they become available.
+"
+  :build-depends-on ("/asdf")
+  :depends-on ("poiu")))
