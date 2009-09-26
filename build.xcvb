@@ -20,5 +20,6 @@ POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading). However,
 it will load FASLs serially as they become available.
 "
-  :build-depends-on ("/asdf")
+  :build-depends-on ((:build "/asdf")
+                     (when (:featurep :sbcl) (:require "sb-posix")))
   :depends-on ("poiu")))

@@ -1,8 +1,6 @@
-;;; This is POIU: Parallel Operator on Independent Units, version 1.001
-;;; derived from asdf: Another System Definition Facility 1.102
-;;;
+;;; This is POIU: Parallel Operator on Independent Units, version 1.002
 #|
-POIU is a variant of ASDF that may operate on your systems in parallel.
+POIU is a modification of ASDF that may operate on your systems in parallel.
 
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading). However,
@@ -41,11 +39,10 @@ the dependencies in your system.
 
 POIU was initially written by Andreas Fuchs in 2006
 as part of an experiment funded by ITA Software, Inc.
-It was latter modified by Francois-Rene Rideau who wrote the CCL port.
-The original copyright of ASDF (below) applies to POIU.
+It was latter modified by Francois-Rene Rideau at ITA Software, who
+wrote the CCL port, and eventually adapted it for use with XCVB in 2009.
+The original copyright of ASDF (below) applies to POIU:
 |#
-
-;;;
 ;;; ASDF is
 ;;; Copyright (c) 2001-2003 Daniel Barlow and contributors
 ;;;
@@ -68,100 +65,24 @@ The original copyright of ASDF (below) applies to POIU.
 ;;; OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 ;;; WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-;;; the problem with writing a defsystem replacement is bootstrapping:
-;;; we can't use defsystem to compile it.  Hence, all in one file
-
-(cl:defpackage #:asdf
-  (:export #:defsystem #:oos #:operate #:find-system #:run-shell-command
-           #:system-definition-pathname #:find-component ; miscellaneous
-           #:hyperdocumentation #:hyperdoc
-
-           #:compile-op #:load-op #:load-source-op #:test-system-version
-           #:parallel-load-op #:parallel-compile-op
-           #:test-op
-           #:operation                  ; operations
-           #:feature                    ; sort-of operation
-           #:version                    ; metaphorically sort-of an operation
-
-           #:input-files #:output-files #:perform       ; operation methods
-           #:operation-done-p #:explain
-
-           #:component #:source-file
-           #:c-source-file #:cl-source-file #:java-source-file
-           #:static-file
-           #:doc-file
-           #:html-file
-           #:text-file
-           #:source-file-type
-           #:module                     ; components
-           #:system
-           #:unix-dso
-
-           #:module-components          ; component accessors
-           #:component-pathname
-           #:component-relative-pathname
-           #:component-name
-           #:component-version
-           #:component-parent
-           #:component-property
-           #:component-system
-
-           #:component-depends-on
-
-           #:system-description
-           #:system-long-description
-           #:system-author
-           #:system-maintainer
-           #:system-license
-           #:system-licence
-
-           #:operation-on-warnings
-           #:operation-on-failure
-
-           ;#:*component-parent-pathname*
-           #:*system-definition-search-functions*
-           #:*central-registry*         ; variables
-           #:*compile-file-warnings-behaviour*
-           #:*compile-file-failure-behaviour*
-           #:*asdf-revision*
-           #:*max-forks*
-
-           #:operation-error #:compile-failed #:compile-warned #:compile-error
-           #:error-component #:error-operation
-           #:system-definition-error
-           #:missing-component
-           #:missing-dependency
-           #:circular-dependency        ; errors
-           #:duplicate-names
-
-           #:retry
-           #:accept                     ; restarts
-
-           #:preference-file-for-system/operation
-           #:load-preferences
-
-           #:operation-necessary-p
-           )
-  (:use :cl))
-
 (cl:in-package #:asdf)
 
 ;;; remove old definitions to avoid redef style warnings from ASDF
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #+sbcl (oos 'load-op :sb-posix)
-  (macrolet ((remove-method-if-defined (method-name specializers &optional
-                                                    qualifiers)
-               `(when (find-method (function ,method-name) ',qualifiers
-                                   ',specializers
-                                   nil)
-                  (remove-method (function ,method-name)
-                                 (find-method (function ,method-name)
-                                              ',qualifiers
-                                              ',specializers)))))
-    (remove-method-if-defined traverse (operation component))
-    (remove-method-if-defined component-depends-on (load-op component)))
-  (fmakunbound 'operate)
-  (fmakunbound 'parse-component-form))
+  #+sbcl (require :sb-posix)
+  (export '(parallel-load-op parallel-compile-op operation-necessary-p))
+  (pushnew :poiu *features*)
+  (define-modify-macro nconcf (x) nconc))
+
+(defmacro remove-method-if-defined
+    (method-name specializers &optional qualifiers)
+  `(when (find-method (function ,method-name) ',qualifiers
+                      ',specializers
+                      nil)
+     (remove-method (function ,method-name)
+                    (find-method (function ,method-name)
+                                 ',qualifiers
+                                 ',specializers))))
 
 (defvar *default-component-class* 'cl-source-file)
 
@@ -170,6 +91,7 @@ The original copyright of ASDF (below) applies to POIU.
   (:report (lambda (c s)
              (format s "Name ~A occurs twice" (duplicate-names-name c)))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
 (defclass component ()
   ((name :accessor component-name :initarg :name :documentation
          "Component name: designator for a string composed of portable pathname characters")
@@ -190,7 +112,7 @@ The original copyright of ASDF (below) applies to POIU.
    ;; XXX we should provide some atomic interface for updating the
    ;; component properties
    (properties :accessor component-properties :initarg :properties
-               :initform nil)))
+               :initform nil))))
 
 (defclass module (component)
   ((components :initform nil :accessor module-components :initarg :components)
@@ -325,13 +247,12 @@ debug them later.")
                                              component-parents)
                                      when real-deps
                                        collect `(,op ,@real-deps))))
-                    (setf starting-points
-                          (nconc starting-points
-                                 (make-dependency-trees
-                                  operation component direct-entries indirect-entries
-                                  (append additional-dependencies
-                                          (when deps
-                                            (normalize-dependencies deps))))))
+                    (nconcf starting-points
+                            (make-dependency-trees
+                             operation component direct-entries indirect-entries
+                             (append additional-dependencies
+                                     (when deps
+                                       (normalize-dependencies deps)))))
                     (dolist (d deps)
                       (do1 (ensure-operation (first d)) (ensure-component (second d))))))
                  (component
@@ -379,11 +300,11 @@ debug them later.")
                (length (cdr depl)))))
 
 (defun check-dependency-trees (module starting-points indirect-entries direct-entries)
-  (loop until (null starting-points)
-        for (op-class component) = (pop starting-points)
-        do (setf starting-points
-                 (nconc starting-points
-                        (mark-as-done (make-instance op-class) component indirect-entries direct-entries))))
+  (loop :until (null starting-points) :do
+    (destructuring-bind (op-class component) (pop starting-points)
+      (nconcf starting-points
+              (mark-as-done (make-instance op-class) component
+                            indirect-entries direct-entries))))
   (unless (zerop (hash-table-count direct-entries))
     (error "Cycle detected in the dependency graph of ~A. Direct dependencies are:~%~S"
            module (summarize-direct-deps direct-entries))))
@@ -722,8 +643,6 @@ debug them later.")
                ,@(component-module-path c)))
     (force-output *breadcrumb-stream*)))
 
-
-
 (defmethod perform ((operation parallelizable-operation) (module module))
   (multiple-value-bind (ops ind dir) (make-checked-dependency-trees operation module)
     (labels ((opspec-op (opspec)
@@ -733,32 +652,36 @@ debug them later.")
              (opspec-necessary-p (opspec)
                (third opspec)))
       (unless (null ops)
-        (dolist/forking ((op ops :result result)
-                         :background-p (and (can-run-in-background-p (opspec-op op))
-                                            (or (not (operation-done-p (opspec-op op)
-                                                                       (opspec-component op)))
-                                                (opspec-necessary-p op)))
-                         :cleanup
-                         (destructuring-bind (&key failure-p performed-p &allow-other-keys)
-                             result
-                           (when failure-p
-                             #+clozure (ccl::finish-outputs)
-                             (warn "Operation ~A has failure-p set. Retrying in this process." op)
-                             #+clozure (ccl::finish-outputs)
-                             (perform (opspec-op op) (opspec-component op)))
-                           (dolist (opened-op (mark-as-done (opspec-op op)
-                                                            (opspec-component op)
-                                                            ind dir))
-                             (when (or (opspec-necessary-p op)
-                                       (and performed-p
-                                            (dependee-operations-necessary-p (opspec-op op)
-                                                                             (opspec-component op))))
-                               (setf opened-op (nconc opened-op
-                                                        (list (operation-necessary-p (opspec-op opened-op)
-                                                                                     (opspec-component opened-op))))))
-                             (if (can-run-in-background-p (opspec-op opened-op))
-                               (push opened-op ops)
-                               (setf ops (nconc ops (list opened-op)))))))
+        (dolist/forking
+            ((op ops :result result)
+             :background-p (and (can-run-in-background-p (opspec-op op))
+                                (or (not (operation-done-p
+                                          (opspec-op op)
+                                          (opspec-component op)))
+                                    (opspec-necessary-p op)))
+             :cleanup
+             (destructuring-bind (&key failure-p performed-p &allow-other-keys)
+                 result
+               (when failure-p
+                 #+clozure (ccl::finish-outputs)
+                 (warn "Operation ~A has failure-p set. Retrying in this process." op)
+                 #+clozure (ccl::finish-outputs)
+                 (perform (opspec-op op) (opspec-component op)))
+               (dolist (opened-op (mark-as-done (opspec-op op)
+                                                (opspec-component op)
+                                                ind dir))
+                 (when (or (opspec-necessary-p op)
+                           (and performed-p
+                                (dependee-operations-necessary-p
+                                 (opspec-op op)
+                                 (opspec-component op))))
+                   (nconcf opened-op
+                           (list (operation-necessary-p
+                                  (opspec-op opened-op)
+                                  (opspec-component opened-op)))))
+                 (if (can-run-in-background-p (opspec-op opened-op))
+                     (push opened-op ops)
+                     (setf ops (nconc ops (list opened-op)))))))
           (when (or (not (operation-done-p (opspec-op op) (opspec-component op)))
                     (opspec-necessary-p op))
             (perform (opspec-op op) (opspec-component op)))))
@@ -773,23 +696,24 @@ debug them later.")
            :components (list c)))
   (setf (visiting-component operation c) t)
   (prog1
-    (unless (component-visited-p operation c)
-      (nconc
-       (loop for (required-op . deps) in (component-depends-on operation c)
-             for required-deeds
-               = (loop for req-c in deps
-                       for dep-c = (or (find-component (component-parent c)
-                                                       (coerce-name req-c)
-                                                       ;; TODO: version
-                                            )
-                                       (error 'missing-dependency
-                                              :required-by c
-                                              :requires req-c))
-                       for dep-op = (make-sub-operation c operation dep-c required-op)
-                       collect (cons dep-op dep-c))
-             append (loop for (dep-op . dep-c) in required-deeds
-                          append (traverse dep-op dep-c)))
-       (list (cons operation c))))
+      (unless (component-visited-p operation c)
+        (nconc
+         (loop
+           :for (required-op . deps) :in (component-depends-on operation c)
+           :for required-deeds =
+           (loop
+             :for req-c :in deps
+             :for dep-c = (or (find-component
+                               (component-parent c)
+                               (coerce-name req-c)) ;; TODO: version
+                              (error 'missing-dependency
+                                     :required-by c
+                                     :requires req-c))
+             :for dep-op = (make-sub-operation c operation dep-c required-op)
+             :collect (cons dep-op dep-c))
+           :append (loop :for (dep-op . dep-c) :in required-deeds
+                     :append (traverse dep-op dep-c)))
+         (list (cons operation c))))
     (setf (visiting-component operation c) nil)
     (visit-component operation c t)))
 
@@ -854,6 +778,8 @@ components is done."
                   (operation-done-p op sub-c)))
            (module-components c))))
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (remove-method-if-defined traverse (operation component))
 (defmethod traverse ((operation operation) (c component))
   (let ((forced nil))
     (labels ((do-one-dep (required-op required-c required-v)
@@ -928,7 +854,7 @@ components is done."
                                (list (cons operation c))))))
       (setf (visiting-component operation c) nil)
       (visit-component operation c (and forced t))
-      forced)))
+      forced))))
 
 (defmethod component-depends-on ((operation compile-op) (c component))
   (let ((default-deps (component-default-dependencies c)))
@@ -939,10 +865,12 @@ components is done."
 (defmethod operation-done-p ((operation compile-op) (c static-file))
   t)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (remove-method-if-defined component-depends-on (load-op component))
 (defmethod component-depends-on ((operation load-op) (c component))
   `((load-op ,@(component-default-dependencies c))
     (compile-op ,(component-name c))
-    ,@(call-next-method)))
+    ,@(call-next-method))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; invoking operations
@@ -961,19 +889,24 @@ components is done."
                           (resolve-component-path (find-system system-name)
                                   component-path))))))
 
-(defun operate (operation-class system &rest args &key (verbose t) version
-                (breadcrumbs-to nil record-breadcrumbs-p)
-                ((:using-breadcrumbs-from breadcrumb-input-pathname) (make-broadcast-stream)
-                 read-breadcrumbs-p)
-                &allow-other-keys)
-  
-  (macrolet ((recording-breadcrumbs ((pathname record-p) &body body)
-               `(if ,record-p
-                    (with-open-file (*breadcrumb-stream* ,pathname :direction :output
-                                                         :if-exists :supersede
-                                                         :if-does-not-exist :create)
-                      ,@body)
-                    (progn ,@body))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (fmakunbound 'operate)
+  (defun call-recording-breadcrumbs (pathname record-p thunk)
+    (if record-p
+        (with-open-file (*breadcrumb-stream*
+                         pathname :direction :output
+                         :if-exists :supersede :if-does-not-exist :create)
+          (funcall thunk))
+        (funcall thunk)))
+  (defmacro recording-breadcrumbs ((pathname record-p) &body body)
+    `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
+
+  (defun operate (operation-class system &rest args &key (verbose t) version
+                  (breadcrumbs-to nil record-breadcrumbs-p)
+                  ((:using-breadcrumbs-from breadcrumb-input-pathname)
+                   (make-broadcast-stream) read-breadcrumbs-p)
+                  &allow-other-keys)
     (let* ((op (apply #'make-instance operation-class
                       :original-initargs args
                       args))
@@ -981,7 +914,6 @@ components is done."
            (system (if (typep system 'component) system (find-system system))))
       (unless (version-satisfies system version)
         (error 'missing-component :requires system :version version))
-      
       (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
         (labels ((operation-necessary (op c)
                    (not (operation-done-p op c))))
@@ -1012,87 +944,84 @@ components is done."
                             (get-universal-time))
                       (return))))))))))))
 
-(defun parse-component-form (parent options)
-  (destructuring-bind
-        (type name &rest rest &key
-              ;; the following list of keywords is reproduced below in the
-              ;; remove-keys form.  important to keep them in sync
-              components pathname default-component-class
-              perform explain output-files operation-done-p
-              weakly-depends-on
-              depends-on serial in-order-to
-              ;; list ends
-              &allow-other-keys) options
-    (check-component-input type name weakly-depends-on depends-on components in-order-to)
-
-    (when (and parent
-             (find-component parent name)
-             ;; ignore the same object when rereading the defsystem
-             (not
-              (typep (find-component parent name)
-                     (class-for-type parent type))))
-      (error 'duplicate-names :name name))
-
-    (let* ((other-args (remove-keys
-                        '(components pathname default-component-class
-                          perform explain output-files operation-done-p
-                          depends-on weakly-depends-on
-                          serial in-order-to)
-                        rest))
-           (ret
-            (or (find-component parent name)
-                (make-instance (class-for-type parent type)))))
-      (when weakly-depends-on
-        (setf depends-on (append depends-on (remove-if (complement #'find-system) weakly-depends-on))))
-      (when (boundp '*serial-depends-on*)
-        (setf depends-on
-              (concatenate 'list *serial-depends-on* depends-on)))
-      (apply #'reinitialize-instance
-             ret
-             :name (coerce-name name)
-             :pathname pathname
-             :parent parent
-             other-args)
-      (when (typep ret 'module)
-        (setf (module-default-component-class ret)
-              (or default-component-class
-                  (and (typep parent 'module)
-                       (module-default-component-class parent))))
-        (let ((*serial-depends-on* nil))
-          (setf (module-components ret)
-                (loop for c-form in components
-                      for c = (parse-component-form ret c-form)
-                      collect c
-                      if serial
-                      do (push (component-name c) *serial-depends-on*))))
-
-        ;; check for duplicate names
-        (let ((name-hash (make-hash-table :test #'equal)))
-          (loop for c in (module-components ret)
-                do
-                (if (gethash (component-name c)
-                             name-hash)
-                    (error 'duplicate-names
-                           :name (component-name c))
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (fmakunbound 'parse-component-form)
+  (defun parse-component-form (parent options)
+    (destructuring-bind
+          (type name &rest rest &key
+                ;; the following list of keywords is reproduced below in the
+                ;; remove-keys form.  important to keep them in sync
+                components pathname default-component-class
+                perform explain output-files operation-done-p
+                weakly-depends-on
+                depends-on serial in-order-to
+                ;; list ends
+                &allow-other-keys) options
+      (check-component-input type name weakly-depends-on depends-on
+                             components in-order-to)
+      (when (and parent
+                 (find-component parent name)
+                 ;; ignore the same object when rereading the defsystem
+                 (not
+                  (typep (find-component parent name)
+                         (class-for-type parent type))))
+        (error 'duplicate-names :name name))
+      (let* ((other-args (remove-keys
+                          '(components pathname default-component-class
+                            perform explain output-files operation-done-p
+                            depends-on weakly-depends-on
+                            serial in-order-to)
+                          rest))
+             (ret
+              (or (find-component parent name)
+                  (make-instance (class-for-type parent type)))))
+        (when weakly-depends-on
+          (appendf depends-on (remove-if (complement #'find-system) weakly-depends-on)))
+        (when (boundp '*serial-depends-on*)
+          (setf depends-on
+                (concatenate 'list *serial-depends-on* depends-on)))
+        (apply #'reinitialize-instance
+               ret
+               :name (coerce-name name)
+               :pathname pathname
+               :parent parent
+               other-args)
+        (when (typep ret 'module)
+          (setf (module-default-component-class ret)
+                (or default-component-class
+                    (and (typep parent 'module)
+                         (module-default-component-class parent))))
+          (let ((*serial-depends-on* nil))
+            (setf (module-components ret)
+                  (loop :for c-form :in components
+                    :for c = (parse-component-form ret c-form)
+                    :collect c
+                    :if serial
+                    :do (push (component-name c) *serial-depends-on*))))
+          ;; check for duplicate names
+          (let ((name-hash (make-hash-table :test #'equal)))
+            (loop :for c :in (module-components ret) :do
+              (if (gethash (component-name c)
+                           name-hash)
+                  (error 'duplicate-names
+                         :name (component-name c))
                   (setf (gethash (component-name c)
                                  name-hash)
                         t)))))
-
-      (setf (slot-value ret 'depends-on) depends-on)
-
-      (loop for (n v) in `((perform ,perform) (explain ,explain)
-                           (output-files ,output-files)
+        (setf (slot-value ret 'depends-on) depends-on)
+        (loop :for (n v) :in `((perform ,perform) (explain ,explain)
+                               (output-files ,output-files)
                            (operation-done-p ,operation-done-p))
-            do (map 'nil
-                    ;; this is inefficient as most of the stored
-                    ;; methods will not be for this particular gf n
-                    ;; But this is hardly performance-critical
-                    (lambda (m) (remove-method (symbol-function n) m))
-                    (component-inline-methods ret))
-            when v
-            do (destructuring-bind (op qual (o c) &body body) v
-                 (pushnew
-                  (eval `(defmethod ,n ,qual ((,o ,op) (,c (eql ,ret)))
-                          ,@body))
-                  (component-inline-methods ret))))
-      ret)))
+          :do (map ()
+                   ;; this is inefficient as most of the stored
+                   ;; methods will not be for this particular gf n
+                   ;; But this is hardly performance-critical
+                   (lambda (m) (remove-method (symbol-function n) m))
+                   (component-inline-methods ret))
+          :when v
+          :do (destructuring-bind (op qual (o c) &body body) v
+                (pushnew
+                 (eval `(defmethod ,n ,qual ((,o ,op) (,c (eql ,ret)))
+                                   ,@body))
+                 (component-inline-methods ret))))
+        ret))))
