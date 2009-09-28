@@ -1,4 +1,4 @@
-;;; This is POIU: Parallel Operator on Independent Units, version 1.002
+;;; This is POIU: Parallel Operator on Independent Units, version 1.003
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 
@@ -31,17 +31,25 @@ Warning to CCL users: you need to save a CCL image that doesn't start threads
 at startup in order to use POIU (or anything that uses fork). Watch QRITA
 for some package that does just that.
 
-To use POIU, just load poiu.lisp after asdf.lisp is loaded, or even instead
-of asdf.lisp, then use it with
+To use POIU, (1) make sure asdf.lisp is loaded - we recommend ASDF 1.366 or
+later but you might have luck with an earlier version. Usually, you can
+	(require :asdf)
+(2) configure ASDF's *CENTRAL-REGISTRY*, then load POIU. (require :poiu)
+might work, and on a recent ASDF you can definitely (asdf:load-system :poiu)
+but the surest way to tell ASDF to load POIU is
+	(asdf:operate 'asdf:load-op :poiu)
+(alternatively, you might manually (load "/path/to/poiu"), but you might as
+well test your configuration of ASDF).
+(3) Actually use POIU, with such commands as
 	(asdf:operate 'asdf:parallel-load-op :your-system)
 Once again, you may want to first use asdf-dependency-grovel to minimize
 the dependencies in your system.
 
 POIU was initially written by Andreas Fuchs in 2006
 as part of an experiment funded by ITA Software, Inc.
-It was latter modified by Francois-Rene Rideau at ITA Software, who
+It was subsequently modified by Francois-Rene Rideau at ITA Software, who
 wrote the CCL port, and eventually adapted it for use with XCVB in 2009.
-The original copyright of ASDF (below) applies to POIU:
+The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 ;;; ASDF is
 ;;; Copyright (c) 2001-2003 Daniel Barlow and contributors
@@ -91,6 +99,18 @@ The original copyright of ASDF (below) applies to POIU:
   (:report (lambda (c s)
              (format s "Name ~A occurs twice" (duplicate-names-name c)))))
 
+#|
+;;; Defining an accessor for the ill-named slot DO-FIRST of class COMPONENT
+;;; It would be nice if the slot definition in adsf.lisp had an :accessor.
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defmethod component-default-dependencies ((component component))
+  (slot-value component 'do-first))
+(defmethod (setf component-default-dependencies) (value (component component))
+  (setf (slot-value component 'do-first) value)))
+
+EXCEPT THAT depends-on is not a trivial renaming of do-first but has different semantics.
+To be investigated before a merge with ASDF is possible. Sigh.
+|#
 (eval-when (:compile-toplevel :load-toplevel :execute)
 (defclass component ()
   ((name :accessor component-name :initarg :name :documentation
@@ -114,6 +134,9 @@ The original copyright of ASDF (below) applies to POIU:
    (properties :accessor component-properties :initarg :properties
                :initform nil))))
 
+
+;;; Overriding the :INITFORM of class MODULE from 'CL-SOURCE-FILE to *DEFAULT-COMPONENT-CLASS*.
+;;; Sigh.
 (defclass module (component)
   ((components :initform nil :accessor module-components :initarg :components)
    ;; what to do if we can't satisfy a dependency of one of this module's
@@ -220,33 +243,30 @@ debug them later.")
              (is-in-tree-p (dependency)
                (gethash dependency direct-entries nil))
              (normalize-dependencies (deps)
-               (loop for (op . dep) in deps
-                     append (mapcan (lambda (dep* &aux (dep (ensure-component dep*)))
-                                      (typecase dep
-                                        (module
-                                         (normalize-dependencies
-                                          `((,(class-name (class-of (ensure-operation op)))
-                                              ,@(module-components dep)))))
-                                        (component (list (list op dep)))))
-                                    dep)))
+               (loop :for (op . dep) :in deps
+                 :append (mapcan (lambda (dep* &aux (dep (ensure-component dep*)))
+                                   (typecase dep
+                                     (module
+                                      (normalize-dependencies
+                                       `((,(class-name (class-of (ensure-operation op)))
+                                           ,@(module-components dep)))))
+                                     (component (list (list op dep)))))
+                                 dep)))
              (do1 (operation component)
                (when (is-in-tree-p (list (class-name (class-of operation)) component))
                  (return-from do1 nil))
                (typecase component
                  (module
-                  (let* ((component-parents (loop for parent = component then (component-parent parent)
-                                                  while parent
-                                                  collect parent))
-                         (deps (loop for (op . deps) in (component-depends-on operation component)
-
-                                     for real-deps
-                                       = (set-difference (mapcar (lambda (dep) 
-                                                                   (find-component (component-parent component)
-                                                                                   (coerce-name dep)))
-                                                                 deps)
-                                             component-parents)
-                                     when real-deps
-                                       collect `(,op ,@real-deps))))
+                  (let* ((component-parents (loop :for parent = component :then (component-parent parent)
+                                              :while parent :collect parent))
+                         (deps (loop :for (op . deps) :in (component-depends-on operation component)
+                                 :for real-deps =
+                                 (set-difference (mapcar (lambda (dep) 
+                                                           (find-component (component-parent component)
+                                                                           (coerce-name dep)))
+                                                         deps)
+                                                 component-parents)
+                                 :when real-deps :collect `(,op ,@real-deps))))
                     (nconcf starting-points
                             (make-dependency-trees
                              operation component direct-entries indirect-entries
@@ -263,10 +283,10 @@ debug them later.")
                          (all-deps (append additional-dependencies deps)))
                     (unless all-deps
                       (pushnew this-op starting-points :test #'equal))
-                    (loop for d in all-deps
-                          do (add-to-tree d this-op))
-                    (loop for d in deps
-                          do (do1 (ensure-operation (first d))
+                    (loop :for d :in all-deps
+                      :do (add-to-tree d this-op))
+                    (loop :for d :in deps
+                      :do (do1 (ensure-operation (first d))
                                   (ensure-component (second d)))))))))
       (dolist (component (module-components module))
         (do1 operation component))
@@ -278,26 +298,23 @@ debug them later.")
   (let* ((this-op (list (class-name (class-of operation))
                         component))
          (dependees (when (gethash this-op indirect-deps)
-                      (loop for dependee being
-                            the hash-keys in (gethash this-op indirect-deps)
-                            collect dependee))))
+                      (loop :for dependee :being
+                        the hash-keys :in (gethash this-op indirect-deps)
+                        :collect dependee))))
     (remhash this-op direct-deps)
-    (loop for dependee in dependees
-          do (assert (gethash dependee direct-deps))
-          do (remhash this-op (gethash dependee direct-deps))
-          when (zerop (hash-table-count (gethash dependee direct-deps)))
-                collect dependee
-                and do (remhash dependee direct-deps))))
+    (loop :for dependee :in dependees
+      :do (assert (gethash dependee direct-deps))
+      :do (remhash this-op (gethash dependee direct-deps))
+      :when (zerop (hash-table-count (gethash dependee direct-deps)))
+      :collect dependee
+      :and :do (remhash dependee direct-deps))))
 
 (defun summarize-direct-deps (dir)
-  (sort (loop for key being the hash-key in dir using (hash-value val)
-         collect (list key
-                       (loop for innerkey being the hash-key in val using (hash-value v)
-                             when v
-                               collect innerkey)))
-        #'<
-        :key (lambda (depl)
-               (length (cdr depl)))))
+  (sort (loop :for key :being the hash-key :in dir :using (:hash-value val)
+          :collect (list key
+                         (loop :for innerkey :being the hash-key :in val :using (:hash-value v)
+                           :when v :collect innerkey)))
+        #'< :key (lambda (depl) (length (cdr depl)))))
 
 (defun check-dependency-trees (module starting-points indirect-entries direct-entries)
   (loop :until (null starting-points) :do
@@ -764,14 +781,14 @@ debug them later.")
   "A lazy operation on a module is done only when the op on all its
 components is done."
   (labels ((dependency-done-p (op sub-c)
-             (loop for (dep-op-name . dep-component-names)
-                       in (component-depends-on op sub-c)
-                   for dep-op = (make-instance dep-op-name)
-                   do (loop for dep-component-name in dep-component-names
-                            for dep-c = (find-component (component-parent sub-c)
-                                             dep-component-name)
-                            do (unless (operation-done-p dep-op dep-c)
-                                 (return-from dependency-done-p nil))))
+             (loop :for (dep-op-name . dep-component-names)
+               :in (component-depends-on op sub-c)
+               :for dep-op = (make-instance dep-op-name)
+               :do (loop :for dep-component-name :in dep-component-names
+                     :for dep-c = (find-component (component-parent sub-c)
+                                                  dep-component-name)
+                     :do (unless (operation-done-p dep-op dep-c)
+                           (return-from dependency-done-p nil))))
              t))
     (every (lambda (sub-c)
              (and (dependency-done-p op sub-c)
@@ -816,24 +833,24 @@ components is done."
       (if (component-visiting-p operation c)
           (error 'circular-dependency :components (list c)))
       (setf (visiting-component operation c) t)
-      (loop for (required-op . deps) in (component-depends-on operation c)
-            do (do-dep required-op deps))
+      (loop :for (required-op . deps) :in (component-depends-on operation c)
+        :do (do-dep required-op deps))
       ;; constituent bits
       (let ((module-ops
              (when (typep c 'module)
                (let ((at-least-one nil)
                      (forced nil)
                      (error nil))
-                 (loop for kid in (module-components c)
-                       do (handler-case
-                              (appendf forced (traverse operation kid ))
-                            (missing-dependency (condition)
-                              (if (eq (module-if-component-dep-fails c) :fail)
-                                  (error condition))
-                              (setf error condition))
-                            (:no-error (c)
-                              (declare (ignore c))
-                              (setf at-least-one t))))
+                 (loop :for kid :in (module-components c)
+                   :do (handler-case
+                           (appendf forced (traverse operation kid ))
+                         (missing-dependency (condition)
+                           (if (eq (module-if-component-dep-fails c) :fail)
+                               (error condition))
+                           (setf error condition))
+                         (:no-error (c)
+                           (declare (ignore c))
+                           (setf at-least-one t))))
                  (when (and (eq (module-if-component-dep-fails c) :try-next)
                             (not at-least-one))
                    (error error))
@@ -883,11 +900,11 @@ components is done."
                  (resolve-component-path (find-component component (first path))
                                          (rest path)))))
     (with-open-file (f pathname)
-      (loop for (op-name system-name . component-path) = (read f nil nil)
-            until (null op-name)
-            collect (cons (make-instance op-name)
-                          (resolve-component-path (find-system system-name)
-                                  component-path))))))
+      (loop :for (op-name system-name . component-path) = (read f nil nil)
+        :until (null op-name)
+        :collect (cons (make-instance op-name)
+                       (resolve-component-path (find-system system-name)
+                                               component-path))))))
 
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -921,7 +938,7 @@ components is done."
                            (read-breadcrumbs-from breadcrumb-input-pathname)
                            (traverse op system))))
             (with-compilation-unit ()
-              (loop for (op . component) in steps do
+              (loop :for (op . component) :in steps :do
                 (loop
                   (restart-case
                       (progn (when (operation-necessary op component)

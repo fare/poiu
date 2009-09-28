@@ -6,3 +6,4 @@
 (asdf:oos 'asdf:parallel-load-op :exscribe)
 (exscribe::process-command-line
  '("-I" "/home/fare/fare/www" "-o" "-" "-H" "/home/fare/fare/www/index.scr"))
+(sb-ext:quit)
