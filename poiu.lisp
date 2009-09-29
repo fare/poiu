@@ -1,4 +1,4 @@
-;;; This is POIU: Parallel Operator on Independent Units, version 1.003
+;;; This is POIU: Parallel Operator on Independent Units, version 1.004
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 
@@ -45,7 +45,7 @@ well test your configuration of ASDF).
 Once again, you may want to first use asdf-dependency-grovel to minimize
 the dependencies in your system.
 
-POIU was initially written by Andreas Fuchs in 2006
+POIU was initially written by Andreas Fuchs in 2007
 as part of an experiment funded by ITA Software, Inc.
 It was subsequently modified by Francois-Rene Rideau at ITA Software, who
 wrote the CCL port, and eventually adapted it for use with XCVB in 2009.
