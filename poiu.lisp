@@ -75,6 +75,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (cl:in-package #:asdf)
 
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  #-(or :clisp :sbcl :clozure)
+  (error "POIU: unsupported Lisp implementation"))
+
 ;;; remove old definitions to avoid redef style warnings from ASDF
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #+sbcl (require :sb-posix)
@@ -373,7 +377,7 @@ debug them later.")
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
 ;; Note: can possibly modify parameters and reset in sb-ext:*after-gc-hooks*
-(defparameter *prefork-allocation-reserve-ratio* .50) ; default ratio: 50%
+(defparameter *prefork-allocation-reserve-ratio* .80) ; default ratio: 80%
 
 (defun should-i-gc-p ()
   (let ((available-bytes (- (sb-alien:extern-alien "auto_gc_trigger" sb-alien:long)
@@ -400,6 +404,12 @@ debug them later.")
 
 (defun posix-pipe ()
   (sb-posix:pipe))
+
+(defun make-output-stream (fd)
+  (sb-sys:make-fd-stream fd :output t))
+
+(defun make-input-stream (fd)
+  (sb-sys:make-fd-stream fd :input t))
 
 )      ;#+sbcl
 
@@ -428,7 +438,56 @@ debug them later.")
 (defun posix-pipe ()
   (ccl::pipe))
 
+(defun make-output-stream (fd)
+  (ccl::make-fd-stream fd :direction :output))
+
+(defun make-input-stream (fd)
+  (ccl::make-fd-stream fd :direction :input))
+
 )      ;#+clozure
+
+#+clisp ;;; CLISP specific fork support
+(progn
+
+(defun posix-fork ()
+  (linux:fork))
+
+(defun posix-close (x)
+  (linux:close x))
+
+(defun posix-setpgrp ()
+  (posix:setpgrp))
+
+(defun posix-wait ()
+  (multiple-value-bind (pid status code) (linux:wait)
+    (values pid (list pid status code))))
+
+(defun posix-waitpid (pid options)
+  (multiple-value-list (apply #'linux:wait :pid pid options)))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+(defun posix-waitpid-options (&rest keys &key nohang untraced)
+  (declare (ignore nohang untraced))
+  keys))
+
+(defun posix-wexitstatus (x)
+  (if (eq :exited (second x))
+    (third x)
+    (cons (second x) (third x))))
+
+(defun posix-pipe ()
+  (multiple-value-bind (code p) (linux:pipe)
+    (unless (zerop code)
+      (error "couldn't make pipes"))
+    (values (aref p 0) (aref p 1))))
+
+(defun make-output-stream (fd)
+  (ext:make-stream fd :direction :output))
+
+(defun make-input-stream (fd)
+  (ext:make-stream fd :direction :input))
+
+);#+clisp
 
 (defun make-communicating-subprocess (data continuation cleanup)
   (multiple-value-bind (read-fd write-fd) (posix-pipe)
@@ -449,16 +508,7 @@ debug them later.")
              (posix-setpgrp)
              ;; close the read end, set the write end to be the status reporter.
              (posix-close read-fd)
-             (setf (status-pipe proc)
-                   ;; XXX: something's breaking at padis-access. consistently.
-                   ;; WTF.
-                   #+sbcl
-                   (sb-sys:make-fd-stream write-fd
-                                          :output t
-                                          :name (format nil "write FD of pid ~A"
-                                                        (sb-posix:getpid)))
-                   #+clozure
-                   (ccl::make-fd-stream write-fd :direction :output))
+             (setf (status-pipe proc) (make-output-stream write-fd))
              (when (find-package :sb-sprof)
                (funcall (intern "STOP-PROFILING" :sb-sprof)))
              (let ((*current-subprocess* proc))
@@ -476,13 +526,7 @@ debug them later.")
             (t
              ;; close the write end, set up the read end
              (posix-close write-fd)
-             (setf (status-pipe proc)
-                   #+clozure
-                   (ccl::make-fd-stream read-fd :direction :input)
-                   #+sbcl
-                   (sb-sys:make-fd-stream read-fd :input t
-                                                  :name (format nil "read FD of pid ~A"
-                                                                pid)))
+             (setf (status-pipe proc) (make-input-stream read-fd))
              proc)))))
 
 #+clozure

@@ -1,9 +1,11 @@
 ; sbcl --load test.lisp
 ; ../single-threaded-ccl/single-threaded-ccl --load test.lisp
+; clisp -i test.lisp
 
 (in-package :cl-user)
 #+sbcl (require :asdf)
 #+clozure (load "../asdf/asdf.lisp")
+#+clisp (require :asdf)
 
 (setf *load-verbose* t
       *load-print* t
@@ -23,5 +25,4 @@
 (exscribe::process-command-line
  '("-I" "/home/fare/fare/www" "-o" "-" "-H" "/home/fare/fare/www/index.scr"))
 
-#+sbcl (sb-ext:quit)
-#+clozure (ccl:quit)
+(cl-launch:quit 0)
