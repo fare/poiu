@@ -265,7 +265,7 @@ debug them later.")
                                               :while parent :collect parent))
                          (deps (loop :for (op . deps) :in (component-depends-on operation component)
                                  :for real-deps =
-                                 (set-difference (mapcar (lambda (dep) 
+                                 (set-difference (mapcar (lambda (dep)
                                                            (find-component (component-parent component)
                                                                            (coerce-name dep)))
                                                          deps)
@@ -371,8 +371,16 @@ debug them later.")
 (defun process-return (proc result)
   (prin1 result (status-pipe proc)))
 
+(defun finish-outputs ()
+  (finish-output *standard-output*)
+  (finish-output *error-output*)
+  (values))
+
 #+sbcl
 (progn
+
+(defun posix-exit (n)
+  (sb-unix:unix-exit n))
 
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
@@ -417,8 +425,10 @@ debug them later.")
 #+clozure
 (progn
 
+(defun posix-exit (n)
+  (ccl:quit n))
+
 (defun posix-fork ()
-  (ccl::finish-outputs)
   (ccl:external-call "fork" :int))
 
 (defun posix-close (x)
@@ -449,6 +459,9 @@ debug them later.")
 #+clisp ;;; CLISP specific fork support
 (progn
 
+(defun posix-exit (n)
+  (ext:quit n))
+
 (defun posix-fork ()
   (linux:fork))
 
@@ -459,16 +472,8 @@ debug them later.")
   (posix:setpgrp))
 
 (defun posix-wait ()
-  (multiple-value-bind (pid status code) (linux:wait)
+  (multiple-value-bind (pid status code) (posix:wait)
     (values pid (list pid status code))))
-
-(defun posix-waitpid (pid options)
-  (multiple-value-list (apply #'linux:wait :pid pid options)))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-(defun posix-waitpid-options (&rest keys &key nohang untraced)
-  (declare (ignore nohang untraced))
-  keys))
 
 (defun posix-wexitstatus (x)
   (if (eq :exited (second x))
@@ -498,6 +503,7 @@ debug them later.")
     ;; at load-time would be to define and hook into an exported interface for process interaction.
     #+sbcl
     (sb-sys:default-interrupt sb-unix:sigchld) ; ignore-interrupt is undefined for SIGCHLD.
+    (finish-outputs)
     (let* ((pid (posix-fork))
            (proc (make-instance 'communicating-subprocess
                     :pid pid
@@ -516,13 +522,8 @@ debug them later.")
                #+clozure (setf ccl::*batch-flag* t)
                (unwind-protect (funcall continuation data)
                  (close (status-pipe proc))
-                 #+clozure
-                 (ccl:quit 0)
-                 #+sbcl
-                 (sb-ext:quit :recklessly-p t ; don't cause
-                                              ; compilation unit error
-                                              ; msg.
-                              :unix-status 0))))
+                 (finish-outputs)
+                 (posix-exit 0))))
             (t
              ;; close the write end, set up the read end
              (posix-close write-fd)
@@ -724,9 +725,9 @@ debug them later.")
              (destructuring-bind (&key failure-p performed-p &allow-other-keys)
                  result
                (when failure-p
-                 #+clozure (ccl::finish-outputs)
+                 (finish-outputs)
                  (warn "Operation ~A has failure-p set. Retrying in this process." op)
-                 #+clozure (ccl::finish-outputs)
+                 (finish-outputs)
                  (perform (opspec-op op) (opspec-component op)))
                (dolist (opened-op (mark-as-done (opspec-op op)
                                                 (opspec-component op)
@@ -799,7 +800,7 @@ debug them later.")
                                   :output-truename output-truename
                                   :warnings-p warnings-p
                                   :failure-p failure-p)))
-      #+clozure (ccl::finish-outputs)
+      (finish-outputs)
       (cond
         ((boundp '*current-subprocess*)
          (process-return *current-subprocess* compile-status))
@@ -937,7 +938,7 @@ components is done."
 ;;; invoking operations
 
 (defun read-breadcrumbs-from (pathname)
-  
+
   (labels ((resolve-component-path (component path)
              (if (null path)
                  component
