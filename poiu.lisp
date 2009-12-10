@@ -120,9 +120,11 @@ To be investigated before a merge with ASDF is possible. Sigh.
   ((name :accessor component-name :initarg :name :documentation
          "Component name: designator for a string composed of portable pathname characters")
    (version :accessor component-version :initarg :version)
-   (in-order-to :initform nil :initarg :in-order-to)
+   (in-order-to :initform nil :initarg :in-order-to :accessor component-in-order-to)
    ;;; XXX crap name
    (depends-on :accessor component-default-dependencies :initarg :depends-on :initform nil)
+   (do-first :initform nil :initarg :do-first
+             :accessor component-do-first)
    ;; methods defined using the "inline" style inside a defsystem form:
    ;; need to store them somewhere so we can delete them when the system
    ;; is re-evaluated
