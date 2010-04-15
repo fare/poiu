@@ -1,4 +1,4 @@
-;;; This is POIU: Parallel Operator on Independent Units, version 1.004
+;;; This is POIU: Parallel Operator on Independent Units, version 1.005
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 
@@ -120,9 +120,10 @@ To be investigated before a merge with ASDF is possible. Sigh.
   ((name :accessor component-name :initarg :name :documentation
          "Component name: designator for a string composed of portable pathname characters")
    (version :accessor component-version :initarg :version)
-   (in-order-to :initform nil :initarg :in-order-to :accessor component-in-order-to)
-   ;;; XXX crap name
+   (in-order-to :initform nil :initarg :in-order-to
+                :accessor component-in-order-to)
    (depends-on :accessor component-default-dependencies :initarg :depends-on :initform nil)
+   ;;; XXX crap name
    (do-first :initform nil :initarg :do-first
              :accessor component-do-first)
    ;; methods defined using the "inline" style inside a defsystem form:
@@ -133,7 +134,8 @@ To be investigated before a merge with ASDF is possible. Sigh.
    ;; no direct accessor for pathname, we do this as a method to allow
    ;; it to default in funky ways if not supplied
    (relative-pathname :initarg :pathname)
-   (operation-times :initform (make-hash-table )
+   (absolute-pathname)
+   (operation-times :initform (make-hash-table)
                     :accessor component-operation-times)
    ;; XXX we should provide some atomic interface for updating the
    ;; component properties
