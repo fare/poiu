@@ -878,7 +878,7 @@ components is done."
 (defmethod component-depends-on ((operation compile-op) (c component))
   (let ((load-deps (component-load-dependencies c)))
     (append (when load-deps
-              `((load-op ,@default-deps)))
+              `((load-op ,@load-deps)))
            (cdr (assoc 'compile-op (slot-value c 'in-order-to))))))
 
 (defmethod operation-done-p ((operation compile-op) (c static-file))
