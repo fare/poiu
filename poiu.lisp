@@ -1,7 +1,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package #:asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.009")
+(defparameter *poiu-version* "1.010")
 (defparameter *asdf-version-required-by-poiu* "1.702"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -267,7 +267,7 @@ debug them later.")
       :and :do (remhash dependee direct-deps))))
 
 (defun summarize-direct-deps (dir)
-  (sort (loop :for key :being the hash-key :in dir :using (:hash-value val)
+  (sort (loop :for key :being :the :hash-keys :in dir :using (:hash-value val)
           :collect (list key
                          (loop :for innerkey :being the hash-key :in val :using (:hash-value v)
                            :when v :collect innerkey)))

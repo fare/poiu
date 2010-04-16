@@ -3,9 +3,10 @@
 ; clisp -i test.lisp
 
 (in-package :cl-user)
-#+sbcl (require :asdf)
-#+clozure (load "../asdf/asdf.lisp")
-#+clisp (require :asdf)
+(require :asdf)
+(unless (or #+asdf2 (asdf:version-satisfies (asdf:asdf-version) "1.702"))
+  (push "/home/fare/cl/asdf/" asdf:*central-registry*)
+  (asdf:oos 'asdf:load-op :asdf))
 
 (setf *load-verbose* t
       *load-print* t
