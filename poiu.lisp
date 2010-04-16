@@ -1,7 +1,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package #:asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.007")
+(defparameter *poiu-version* "1.009")
 (defparameter *asdf-version-required-by-poiu* "1.702"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
