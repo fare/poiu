@@ -1,6 +1,10 @@
-;;; This is POIU: Parallel Operator on Independent Units, version 1.005
+;;; This is POIU: Parallel Operator on Independent Units
+(cl:in-package #:asdf)
+(defparameter *poiu-version* "1.006")
+(defparameter *asdf-version-required-by-poiu* "1.702")
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
+This version of POIU was designed to work with ASDF no earlier than specified.
 
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading). However,
@@ -73,18 +77,22 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 ;;; OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 ;;; WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-(cl:in-package #:asdf)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or :clisp :sbcl :clozure)
-  (error "POIU: unsupported Lisp implementation"))
-
-;;; remove old definitions to avoid redef style warnings from ASDF
-(eval-when (:compile-toplevel :load-toplevel :execute)
+  #-(or clisp sbcl clozure)
+  (error "POIU doesn't support your Lisp implementation.")
+  #-asdf2
+  (error "POIU requires ASDF2.")
+  #+asdf2
+  (unless (asdf:version-satisfies (asdf:asdf-version) *asdf-version-required-by-poiu*)
+    (error "POIU ~A requires ASDF ~A or later."
+           *poiu-version*
+           *asdf-version-required-by-poiu*))
   #+sbcl (require :sb-posix)
   (export '(parallel-load-op parallel-compile-op operation-necessary-p))
-  (pushnew :poiu *features*)
-  (define-modify-macro nconcf (x) nconc))
+  (pushnew :poiu *features*))
+
+(define-modify-macro nconcf (x) nconc)
 
 (defmacro remove-method-if-defined
     (method-name specializers &optional qualifiers)
@@ -96,70 +104,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                                  ',qualifiers
                                  ',specializers))))
 
-(defvar *default-component-class* 'cl-source-file)
-
-(define-condition duplicate-names (system-definition-error)
-  ((name :initarg :name :reader duplicate-names-name))
-  (:report (lambda (c s)
-             (format s "Name ~A occurs twice" (duplicate-names-name c)))))
-
-#|
-;;; Defining an accessor for the ill-named slot DO-FIRST of class COMPONENT
-;;; It would be nice if the slot definition in adsf.lisp had an :accessor.
-(eval-when (:compile-toplevel :load-toplevel :execute)
-(defmethod component-default-dependencies ((component component))
-  (slot-value component 'do-first))
-(defmethod (setf component-default-dependencies) (value (component component))
-  (setf (slot-value component 'do-first) value)))
-
-EXCEPT THAT depends-on is not a trivial renaming of do-first but has different semantics.
-To be investigated before a merge with ASDF is possible. Sigh.
-|#
-(eval-when (:compile-toplevel :load-toplevel :execute)
-(defclass component ()
-  ((name :accessor component-name :initarg :name :documentation
-         "Component name: designator for a string composed of portable pathname characters")
-   (version :accessor component-version :initarg :version)
-   (in-order-to :initform nil :initarg :in-order-to
-                :accessor component-in-order-to)
-   (depends-on :accessor component-default-dependencies :initarg :depends-on :initform nil)
-   ;;; XXX crap name
-   (do-first :initform nil :initarg :do-first
-             :accessor component-do-first)
-   ;; methods defined using the "inline" style inside a defsystem form:
-   ;; need to store them somewhere so we can delete them when the system
-   ;; is re-evaluated
-   (inline-methods :accessor component-inline-methods :initform nil)
-   (parent :initarg :parent :initform nil :reader component-parent)
-   ;; no direct accessor for pathname, we do this as a method to allow
-   ;; it to default in funky ways if not supplied
-   (relative-pathname :initarg :pathname)
-   (absolute-pathname)
-   (operation-times :initform (make-hash-table)
-                    :accessor component-operation-times)
-   ;; XXX we should provide some atomic interface for updating the
-   ;; component properties
-   (properties :accessor component-properties :initarg :properties
-               :initform nil))))
-
-
-;;; Overriding the :INITFORM of class MODULE from 'CL-SOURCE-FILE to *DEFAULT-COMPONENT-CLASS*.
-;;; Sigh.
-(defclass module (component)
-  ((components :initform nil :accessor module-components :initarg :components)
-   ;; what to do if we can't satisfy a dependency of one of this module's
-   ;; components.  This allows a limited form of conditional processing
-   (if-component-dep-fails :initform :fail
-                           :accessor module-if-component-dep-fails
-                           :initarg :if-component-dep-fails)
-   (default-component-class :accessor module-default-component-class
-     :initform *default-component-class*
-     :initarg :default-component-class)))
-
 (defclass parallelizable-operation (operation) ())
 
 (defclass parallel-op (parallelizable-operation)
-     ((operations :initarg :operations :accessor parallel-operations)))
+  ((operations :initarg :operations :accessor parallel-operations)))
 
 (defvar *breadcrumb-stream* (make-broadcast-stream)
   "Stream that records the trail of operations on components.
@@ -210,7 +158,7 @@ debug them later.")
 ;;; XXX: (operate 'parallel-compile-op :system) ; is broken.
 ;;; This is caused by my inability to comprehend what it /should/ do.
 (defmethod component-depends-on :around ((op parallel-load-op) (c module))
-  `((parallel-load-op ,@(component-default-dependencies c))))
+  `((parallel-load-op ,@(component-load-dependencies c))))
 
 (defun component-equal (c1 c2)
   (or (and (null c1) (null c2))
@@ -398,6 +346,8 @@ debug them later.")
     (< available-bytes (* *prefork-allocation-reserve-ratio* allocation-threshhold))))
 
 (defun posix-fork ()
+  (unless (null (cdr (sb-thread:list-all-threads)))
+    (error "Cannot fork: more than one active thread."))
   (when (should-i-gc-p)
     (sb-ext:gc))
   (sb-posix:fork))
@@ -433,6 +383,8 @@ debug them later.")
   (ccl:quit n))
 
 (defun posix-fork ()
+  (unless (null (cdr (ccl:all-processes)))
+    (error "Cannot fork: more than one active thread. Are you using single-threaded-ccl?"))
   (ccl:external-call "fork" :int))
 
 (defun posix-close (x)
@@ -923,8 +875,8 @@ components is done."
       forced))))
 
 (defmethod component-depends-on ((operation compile-op) (c component))
-  (let ((default-deps (component-default-dependencies c)))
-    (append (when default-deps
+  (let ((load-deps (component-load-dependencies c)))
+    (append (when load-deps
               `((load-op ,@default-deps)))
            (cdr (assoc 'compile-op (slot-value c 'in-order-to))))))
 
@@ -934,7 +886,7 @@ components is done."
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (remove-method-if-defined component-depends-on (load-op component))
 (defmethod component-depends-on ((operation load-op) (c component))
-  `((load-op ,@(component-default-dependencies c))
+  `((load-op ,@(component-load-dependencies c))
     (compile-op ,(component-name c))
     ,@(call-next-method))))
 
@@ -1009,85 +961,3 @@ components is done."
                                      (component-operation-times component))
                             (get-universal-time))
                       (return))))))))))))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (fmakunbound 'parse-component-form)
-  (defun parse-component-form (parent options)
-    (destructuring-bind
-          (type name &rest rest &key
-                ;; the following list of keywords is reproduced below in the
-                ;; remove-keys form.  important to keep them in sync
-                components pathname default-component-class
-                perform explain output-files operation-done-p
-                weakly-depends-on
-                depends-on serial in-order-to
-                ;; list ends
-                &allow-other-keys) options
-      (check-component-input type name weakly-depends-on depends-on
-                             components in-order-to)
-      (when (and parent
-                 (find-component parent name)
-                 ;; ignore the same object when rereading the defsystem
-                 (not
-                  (typep (find-component parent name)
-                         (class-for-type parent type))))
-        (error 'duplicate-names :name name))
-      (let* ((other-args (remove-keys
-                          '(components pathname default-component-class
-                            perform explain output-files operation-done-p
-                            depends-on weakly-depends-on
-                            serial in-order-to)
-                          rest))
-             (ret
-              (or (find-component parent name)
-                  (make-instance (class-for-type parent type)))))
-        (when weakly-depends-on
-          (appendf depends-on (remove-if (complement #'find-system) weakly-depends-on)))
-        (when (boundp '*serial-depends-on*)
-          (setf depends-on
-                (concatenate 'list *serial-depends-on* depends-on)))
-        (apply #'reinitialize-instance
-               ret
-               :name (coerce-name name)
-               :pathname pathname
-               :parent parent
-               other-args)
-        (when (typep ret 'module)
-          (setf (module-default-component-class ret)
-                (or default-component-class
-                    (and (typep parent 'module)
-                         (module-default-component-class parent))))
-          (let ((*serial-depends-on* nil))
-            (setf (module-components ret)
-                  (loop :for c-form :in components
-                    :for c = (parse-component-form ret c-form)
-                    :collect c
-                    :if serial
-                    :do (push (component-name c) *serial-depends-on*))))
-          ;; check for duplicate names
-          (let ((name-hash (make-hash-table :test #'equal)))
-            (loop :for c :in (module-components ret) :do
-              (if (gethash (component-name c)
-                           name-hash)
-                  (error 'duplicate-names
-                         :name (component-name c))
-                  (setf (gethash (component-name c)
-                                 name-hash)
-                        t)))))
-        (setf (slot-value ret 'depends-on) depends-on)
-        (loop :for (n v) :in `((perform ,perform) (explain ,explain)
-                               (output-files ,output-files)
-                           (operation-done-p ,operation-done-p))
-          :do (map ()
-                   ;; this is inefficient as most of the stored
-                   ;; methods will not be for this particular gf n
-                   ;; But this is hardly performance-critical
-                   (lambda (m) (remove-method (symbol-function n) m))
-                   (component-inline-methods ret))
-          :when v
-          :do (destructuring-bind (op qual (o c) &body body) v
-                (pushnew
-                 (eval `(defmethod ,n ,qual ((,o ,op) (,c (eql ,ret)))
-                                   ,@body))
-                 (component-inline-methods ret))))
-        ret))))
