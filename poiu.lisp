@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package #:asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.010")
-(defparameter *asdf-version-required-by-poiu* "1.702"))
+(defparameter *poiu-version* "1.011")
+(defparameter *asdf-version-required-by-poiu* "1.705"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -685,7 +685,7 @@ debug them later.")
                  (finish-outputs)
                  (warn "Operation ~A has failure-p set. Retrying in this process." op)
                  (finish-outputs)
-                 (perform (opspec-op op) (opspec-component op)))
+                 (perform-with-restarts (opspec-op op) (opspec-component op)))
                (dolist (opened-op (mark-as-done (opspec-op op)
                                                 (opspec-component op)
                                                 ind dir))
@@ -703,7 +703,7 @@ debug them later.")
                      (setf ops (nconc ops (list opened-op)))))))
           (when (or (not (operation-done-p (opspec-op op) (opspec-component op)))
                     (opspec-necessary-p op))
-            (perform (opspec-op op) (opspec-component op)))))
+            (perform-with-restarts (opspec-op op) (opspec-component op)))))
       (assert (zerop (hash-table-count dir))
               (dir ind)
               "Direct dependency table is not empty - there is a problem ~
@@ -944,7 +944,7 @@ components is done."
                 (loop
                   (restart-case
                       (progn (when (operation-necessary op component)
-                               (perform op component))
+                               (perform-with-restarts op component))
                              (return))
                     (retry ()
                       :report
