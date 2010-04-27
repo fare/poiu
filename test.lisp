@@ -4,7 +4,7 @@
 
 (in-package :cl-user)
 (require :asdf)
-(unless (or #+asdf2 (asdf:version-satisfies (asdf:asdf-version) "1.702"))
+(unless (or #+asdf2 (asdf:version-satisfies (asdf:asdf-version) "1.705"))
   (push "/home/fare/cl/asdf/" asdf:*central-registry*)
   (asdf:oos 'asdf:load-op :asdf))
 

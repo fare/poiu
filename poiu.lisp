@@ -1,15 +1,15 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package #:asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.011")
+(defparameter *poiu-version* "1.012")
 (defparameter *asdf-version-required-by-poiu* "1.705"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
 
 POIU will notably compile each Lisp file in its own forked process,
-in parallel with other operations (compilation or loading). However,
-it will load FASLs serially as they become available.
+in parallel with other operations (compilation or loading).
+However, it will load FASLs serially as they become available.
 
 POIU will only make a difference with respect to ASDF if the dependencies
 are not serial (i.e. no difference for systems using :serial t everywhere).
@@ -22,29 +22,31 @@ POIU will enforce separation between compile- and load- time environments,
 helping you detect when :LOAD-TOPLEVEL is missing in EVAL-WHEN's
 (as needed for incremental compilation even with vanilla ASDF).
 POIU will also catch *some* missing dependencies as exist between the
-files that it will happen to compile in parallel (but won't catch other
+files that it will happen to compile in parallel (but may not catch all
 dependencies that may otherwise be missing from your system).
 
 When a compilation fails in a parallel process, POIU will retry compiling
 in the main (loading) process so you get the usual ASDF error behavior,
 with a chance to debug the issue and restart the operation.
 
-POIU was currently only made to work with SBCL and CCL. Porting to another
-Lisp implementation that supports ASDF should not be difficult.
+POIU was currently only made to work with SBCL, CCL and CLISP.
+Porting to another Lisp implementation that supports ASDF
+should not be difficult. [Note: CLISP port somehow seems less stable.]
 
 Warning to CCL users: you need to save a CCL image that doesn't start threads
-at startup in order to use POIU (or anything that uses fork). Watch QRITA
-for some package that does just that.
+at startup in order to use POIU (or anything that uses fork).
+Watch QITAB for a package that does just that: SINGLE-THREADED-CCL.
 
-To use POIU, (1) make sure asdf.lisp is loaded - we recommend ASDF 1.366 or
-later but you might have luck with an earlier version. Usually, you can
+To use POIU, (1) make sure asdf.lisp is loaded.
+We require a recent enough ASDF 1.705; see specific requirement above.
+Usually, you can
 	(require :asdf)
-(2) configure ASDF's *CENTRAL-REGISTRY*, then load POIU. (require :poiu)
-might work, and on a recent ASDF you can definitely (asdf:load-system :poiu)
-but the surest way to tell ASDF to load POIU is
-	(asdf:operate 'asdf:load-op :poiu)
-(alternatively, you might manually (load "/path/to/poiu"), but you might as
-well test your configuration of ASDF).
+(2) configure ASDF's SOURCE-REGISTRY or its *CENTRAL-REGISTRY*, then load POIU.
+	(require :poiu)
+might work on SBCL and CCL. On CLISP, you can definitely
+	(asdf:load-system :poiu)
+(alternatively, you might manually (load "/path/to/poiu"),
+but you might as well test your configuration of ASDF).
 (3) Actually use POIU, with such commands as
 	(asdf:operate 'asdf:parallel-load-op :your-system)
 Once again, you may want to first use asdf-dependency-grovel to minimize
@@ -80,7 +82,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or clisp sbcl clozure)
+  #-(or clisp clozure sbcl)
   (error "POIU doesn't support your Lisp implementation.")
   #-asdf2
   (error "POIU requires ASDF2.")
@@ -796,84 +798,6 @@ components is done."
              (and (dependency-done-p op sub-c)
                   (operation-done-p op sub-c)))
            (module-components c))))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (remove-method-if-defined traverse (operation component))
-(defmethod traverse ((operation operation) (c component))
-  (let ((forced nil))
-    (labels ((do-one-dep (required-op required-c required-v)
-               (let* ((dep-c (or (find-component
-                                  (component-parent c)
-                                  ;; XXX tacky.  really we should build the
-                                  ;; in-order-to slot with canonicalized
-                                  ;; names instead of coercing this late
-                                  (coerce-name required-c) required-v)
-                                 (error 'missing-dependency :required-by c
-                                        :version required-v
-                                        :requires required-c)))
-                      (op (make-sub-operation c operation dep-c required-op)))
-                 (traverse op dep-c)))
-             (do-dep (op dep)
-               (cond ((eq op 'feature)
-                      (or (member (car dep) *features*)
-                          (error 'missing-dependency :required-by c
-                                 :requires (car dep) :version nil)))
-                     (t
-                      (dolist (d dep)
-                        (cond ((consp d)
-                               (assert (string-equal
-                                        (symbol-name (first d))
-                                        "VERSION"))
-                               (appendf forced
-                                        (do-one-dep op (second d) (third d))))
-                              (t
-                               (appendf forced (do-one-dep op d nil)))))))))
-      (aif (component-visited-p operation c)
-           (return-from traverse
-             (if (cdr it) (list (cons 'pruned-op c)) nil)))
-      ;; dependencies
-      (if (component-visiting-p operation c)
-          (error 'circular-dependency :components (list c)))
-      (setf (visiting-component operation c) t)
-      (loop :for (required-op . deps) :in (component-depends-on operation c)
-        :do (do-dep required-op deps))
-      ;; constituent bits
-      (let ((module-ops
-             (when (typep c 'module)
-               (let ((at-least-one nil)
-                     (forced nil)
-                     (error nil))
-                 (loop :for kid :in (module-components c)
-                   :do (handler-case
-                           (appendf forced (traverse operation kid ))
-                         (missing-dependency (condition)
-                           (if (eq (module-if-component-dep-fails c) :fail)
-                               (error condition))
-                           (setf error condition))
-                         (:no-error (c)
-                           (declare (ignore c))
-                           (setf at-least-one t))))
-                 (when (and (eq (module-if-component-dep-fails c) :try-next)
-                            (not at-least-one))
-                   (error error))
-                 forced))))
-        ;; now the thing itself
-        (when (or forced module-ops
-                  (not (operation-done-p operation c))
-                  (let ((f (operation-forced (operation-ancestor operation))))
-                    (and f (or (not (consp f))
-                               (member (component-name
-                                        (operation-ancestor operation))
-                                       (mapcar #'coerce-name f)
-                                       :test #'string=)))))
-          ;; only difference with original traverse is the absence of
-          ;; the do-first thing.
-          (setf forced (append (delete 'pruned-op forced :key #'car)
-                               (delete 'pruned-op module-ops :key #'car)
-                               (list (cons operation c))))))
-      (setf (visiting-component operation c) nil)
-      (visit-component operation c (and forced t))
-      forced))))
 
 (defmethod component-depends-on ((operation compile-op) (c component))
   (let ((load-deps (component-load-dependencies c)))
