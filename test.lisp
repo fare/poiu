@@ -1,5 +1,5 @@
 ; sbcl --load test.lisp
-; ../single-threaded-ccl/single-threaded-ccl --load test.lisp
+; ../single-threaded-ccl/stccl --load test.lisp
 ; clisp -i test.lisp
 
 (in-package :cl-user)

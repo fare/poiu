@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
-(cl:in-package #:asdf)
+(cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.012")
-(defparameter *asdf-version-required-by-poiu* "1.705"))
+(defparameter *poiu-version* "1.013")
+(defparameter *asdf-version-required-by-poiu* "1.710"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -145,23 +145,24 @@ debug them later.")
 
 (defclass parallel-load-op (load-op parallelizable-operation) ())
 
-(macrolet ((def-depend-method (class)
-               `(defmethod component-depends-on ((operation ,class) c)
-                  (declare (ignorable c))
-                  (let ((what-would-the-regular-op-do (call-next-method)))
-                    (mapcar (lambda (deed)
-                              (case (car deed)
-                                (compile-op (cons 'parallel-compile-op (cdr deed)))
-                                (load-op (cons 'parallel-load-op (cdr deed)))
-                                (otherwise deed)))
-                            what-would-the-regular-op-do)))))
-  (def-depend-method parallel-compile-op)
-  (def-depend-method parallel-load-op))
+(defun parallelize-deed (deed)
+  (case (car deed)
+    (compile-op (cons 'parallel-compile-op (cdr deed)))
+    (load-op (cons 'parallel-load-op (cdr deed)))
+    (otherwise deed)))
 
-;;; XXX: (operate 'parallel-compile-op :system) ; is broken.
-;;; This is caused by my inability to comprehend what it /should/ do.
-(defmethod component-depends-on :around ((op parallel-load-op) (c module))
-  `((parallel-load-op ,@(component-load-dependencies c))))
+;; ASDF somehow maintains a dubious distinction between internal dependencies
+;; that trigger a recompilation and external dependencies that don't.
+;; We don't try to maintain that distinction as we deduce parallel dependencies
+;; from serial dependencies.
+(macrolet ((def-depend-method (class base-class)
+             `(defmethod component-depends-on ((operation ,class) c)
+                (mapcar #'parallelize-deed
+                        (append
+                         (cdr (assoc ',base-class (component-do-first c)))
+                         (call-next-method))))))
+  (def-depend-method parallel-compile-op compile-op)
+  (def-depend-method parallel-load-op load-op))
 
 (defun component-equal (c1 c2)
   (or (and (null c1) (null c2))
@@ -799,21 +800,8 @@ components is done."
                   (operation-done-p op sub-c)))
            (module-components c))))
 
-(defmethod component-depends-on ((operation compile-op) (c component))
-  (let ((load-deps (component-load-dependencies c)))
-    (append (when load-deps
-              `((load-op ,@load-deps)))
-           (cdr (assoc 'compile-op (slot-value c 'in-order-to))))))
-
 (defmethod operation-done-p ((operation compile-op) (c static-file))
   t)
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (remove-method-if-defined component-depends-on (load-op component))
-(defmethod component-depends-on ((operation load-op) (c component))
-  `((load-op ,@(component-load-dependencies c))
-    (compile-op ,(component-name c))
-    ,@(call-next-method))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; invoking operations
