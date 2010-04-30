@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.013")
-(defparameter *asdf-version-required-by-poiu* "1.710"))
+(defparameter *poiu-version* "1.014")
+(defparameter *asdf-version-required-by-poiu* "1.711"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -117,6 +117,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 As the order of ASDF operations in general and parallel operations in
 particular are randomized, it is necessary to record them to replay &
 debug them later.")
+
+(defvar *breadcrumbs* nil
+  "Actual breadcrumbs found, to override traversal for replay and debugging")
 
 (defgeneric can-run-in-background-p (operation)
   (:method ((operation parallelizable-operation))
@@ -665,7 +668,7 @@ debug them later.")
                ,@(component-module-path c)))
     (force-output *breadcrumb-stream*)))
 
-(defmethod perform ((operation parallelizable-operation) (module module))
+(defmethod perform-with-restarts ((operation parallelizable-operation) (module module))
   (multiple-value-bind (ops ind dir) (make-checked-dependency-trees operation module)
     (labels ((opspec-op (opspec)
                (make-instance (first opspec)))
@@ -703,7 +706,7 @@ debug them later.")
                                   (opspec-component opened-op)))))
                  (if (can-run-in-background-p (opspec-op opened-op))
                      (push opened-op ops)
-                     (setf ops (nconc ops (list opened-op)))))))
+                     (nconcf ops (list opened-op))))))
           (when (or (not (operation-done-p (opspec-op op) (opspec-component op)))
                     (opspec-necessary-p op))
             (perform-with-restarts (opspec-op op) (opspec-component op)))))
@@ -712,32 +715,28 @@ debug them later.")
               "Direct dependency table is not empty - there is a problem ~
                with the dependency trees:~%~S" (summarize-direct-deps dir)))))
 
-(defmethod traverse ((operation parallelizable-operation) (c module))
+(defmethod do-traverse ((operation parallelizable-operation) (c module) collect)
   (when (component-visiting-p operation c)
     (error 'circular-dependency
            :components (list c)))
-  (setf (visiting-component operation c) t)
-  (prog1
-      (unless (component-visited-p operation c)
-        (nconc
-         (loop
-           :for (required-op . deps) :in (component-depends-on operation c)
-           :for required-deeds =
-           (loop
-             :for req-c :in deps
-             :for dep-c = (or (find-component
-                               (component-parent c)
-                               (coerce-name req-c)) ;; TODO: version
-                              (error 'missing-dependency
-                                     :required-by c
-                                     :requires req-c))
-             :for dep-op = (make-sub-operation c operation dep-c required-op)
-             :collect (cons dep-op dep-c))
-           :append (loop :for (dep-op . dep-c) :in required-deeds
-                     :append (traverse dep-op dep-c)))
-         (list (cons operation c))))
-    (setf (visiting-component operation c) nil)
-    (visit-component operation c t)))
+  (unless (component-visited-p operation c)
+    (setf (visiting-component operation c) t)
+    (loop
+      :for (required-op . deps) :in (component-depends-on operation c)
+      :for required-deeds =
+      (loop
+        :for req-c :in deps
+        :for dep-c = (or (find-component
+                          (component-parent c)
+                          (coerce-name req-c)) ;; TODO: version
+                         (error 'missing-dependency
+                                :required-by c
+                                :requires req-c))
+        :for dep-op = (make-sub-operation c operation dep-c required-op) :do
+        (do-traverse dep-op dep-c collect)) :do
+      (do-collect collect (cons operation c)))
+    (setf (visiting-component operation c) nil))
+  (visit-component operation c t))
 
 (defmethod perform :before ((operation parallel-compile-op) (c source-file))
   (map nil #'ensure-directories-exist (output-files operation c)))
@@ -807,7 +806,6 @@ components is done."
 ;;; invoking operations
 
 (defun read-breadcrumbs-from (pathname)
-
   (labels ((resolve-component-path (component path)
              (if (null path)
                  component
@@ -820,57 +818,29 @@ components is done."
                        (resolve-component-path (find-system system-name)
                                                component-path))))))
 
+(defun call-recording-breadcrumbs (pathname record-p thunk)
+  (if record-p
+      (with-open-file (*breadcrumb-stream*
+                       pathname :direction :output
+                       :if-exists :supersede :if-does-not-exist :create)
+        (funcall thunk))
+      (funcall thunk)))
+(defmacro recording-breadcrumbs ((pathname record-p) &body body)
+  `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (fmakunbound 'operate)
-  (defun call-recording-breadcrumbs (pathname record-p thunk)
-    (if record-p
-        (with-open-file (*breadcrumb-stream*
-                         pathname :direction :output
-                         :if-exists :supersede :if-does-not-exist :create)
-          (funcall thunk))
-        (funcall thunk)))
-  (defmacro recording-breadcrumbs ((pathname record-p) &body body)
-    `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
+(defmethod traverse :around ((operation-class parallelizable-operation) system)
+  (or *breadcrumbs* (call-next-method)))
 
-  (defun operate (operation-class system &rest args &key (verbose t) version
-                  (breadcrumbs-to nil record-breadcrumbs-p)
-                  ((:using-breadcrumbs-from breadcrumb-input-pathname)
-                   (make-broadcast-stream) read-breadcrumbs-p)
-                  &allow-other-keys)
-    (let* ((op (apply #'make-instance operation-class
-                      :original-initargs args
-                      args))
-           (*verbose-out* (if verbose *trace-output* (make-broadcast-stream)))
-           (system (if (typep system 'component) system (find-system system))))
-      (unless (version-satisfies system version)
-        (error 'missing-component :requires system :version version))
-      (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
-        (labels ((operation-necessary (op c)
-                   (not (operation-done-p op c))))
-          (let ((steps (if read-breadcrumbs-p
-                           (read-breadcrumbs-from breadcrumb-input-pathname)
-                           (traverse op system))))
-            (with-compilation-unit ()
-              (loop :for (op . component) :in steps :do
-                (loop
-                  (restart-case
-                      (progn (when (operation-necessary op component)
-                               (perform-with-restarts op component))
-                             (return))
-                    (retry ()
-                      :report
-                      (lambda (s)
-                        (format s "~@<Retry performing ~S on ~S.~@:>"
-                                op component)))
-                    (accept ()
-                      :report
-                      (lambda (s)
-                        (format s
-                                "~@<Continue, treating ~S on ~S as ~
-                               having been successful.~@:>"
-                                op component))
-                      (setf (gethash (type-of op)
-                                     (component-operation-times component))
-                            (get-universal-time))
-                      (return))))))))))))
+(defmethod operate :around ((operation-class parallelizable-operation) system &key
+                            (breadcrumbs-to nil record-breadcrumbs-p)
+                            ((:using-breadcrumbs-from breadcrumb-input-pathname)
+                             (make-broadcast-stream) read-breadcrumbs-p)
+                            &allow-other-keys)
+  (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
+    (let ((*breadcrumbs* (when read-breadcrumbs-p
+                           (read-breadcrumbs-from breadcrumb-input-pathname))))
+      (call-next-method))))
+
+(defmethod perform-with-restart :around ((operation parallelizable-operation) c)
+  (unless (operation-done-p operation c)
+    (call-next-method)))
