@@ -1,7 +1,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.014")
+(defparameter *poiu-version* "1.015")
 (defparameter *asdf-version-required-by-poiu* "1.711"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -722,8 +722,7 @@ debug them later.")
   (unless (component-visited-p operation c)
     (setf (visiting-component operation c) t)
     (loop
-      :for (required-op . deps) :in (component-depends-on operation c)
-      :for required-deeds =
+      :for (required-op . deps) :in (component-depends-on operation c) :do
       (loop
         :for req-c :in deps
         :for dep-c = (or (find-component
@@ -733,7 +732,7 @@ debug them later.")
                                 :required-by c
                                 :requires req-c))
         :for dep-op = (make-sub-operation c operation dep-c required-op) :do
-        (do-traverse dep-op dep-c collect)) :do
+        (do-traverse dep-op dep-c collect))
       (do-collect collect (cons operation c)))
     (setf (visiting-component operation c) nil))
   (visit-component operation c t))
