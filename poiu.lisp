@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.016")
-(defparameter *asdf-version-required-by-poiu* "1.711"))
+(defparameter *poiu-version* "1.017")
+(defparameter *asdf-version-required-by-poiu* "1.713"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -595,6 +595,8 @@ Operation-executed-p is at plan execution time."))
                        (setf pid-map (delete entry pid-map))
                        (decf count)
                        (cleanup entry (posix-wexitstatus status)))
+                     ;; clisp can currently drop signals and get a ENOCHILD...
+                     #-sbcl ;; avoid a compiler note when things aren't broken
                      (let ((entries pid-map))
                        (warn "No child left: we must have dropped a signal!")
                        ;;;(warn "blah ~S" entries) ;XXX
@@ -875,10 +877,6 @@ components is done."
     (let ((*breadcrumbs* (when read-breadcrumbs-p
                            (read-breadcrumbs-from breadcrumb-input-pathname))))
       (call-next-method))))
-
-(defmethod perform-with-restart :around ((operation parallelizable-operation) c)
-  (unless (operation-executed-p operation c)
-    (call-next-method)))
 
 (defun parallel-load-system (system &rest args)
   (apply #'operate 'parallel-load-op system args))
