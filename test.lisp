@@ -5,6 +5,7 @@
 ; ../single-threaded-ccl/stccl --load test.lisp
 ;; (clisp) : \
 ; clisp -i ../asdf/asdf.lisp -i test.lisp
+;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac ; exit
 
 (in-package :cl-user)

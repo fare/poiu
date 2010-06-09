@@ -18,5 +18,5 @@ POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
     ;; Make sure asdf won't be reloaded on top of poiu.
-    :depends-on ((:version :asdf "1.713"))
+    :depends-on ((:version :asdf "2.000"))
     :components ((:file "poiu")))
