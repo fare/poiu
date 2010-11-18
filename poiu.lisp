@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.018")
-(defparameter *asdf-version-required-by-poiu* "2.000"))
+(defparameter *poiu-version* "1.019")
+(defparameter *asdf-version-required-by-poiu* "2.010"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -190,6 +190,16 @@ Operation-executed-p is at plan execution time."))
   (and (eql (car deed1) (car deed2))
        (component-equal (second deed1) (second deed2))))
 
+(defun ensure-component (parent coid)
+  (etypecase coid
+    (component coid)
+    ((or symbol string)
+     (assert coid)
+     (let ((c (find-component parent (coerce-name coid))))
+       (unless (typep c 'component)
+         (error 'missing-component :requires coid :parent parent))
+       c))))
+
 (defun make-dependency-trees (operation module &optional
                               ;; component -> dependency map
                               (direct-entries (make-hash-table :test #'equal))
@@ -197,11 +207,7 @@ Operation-executed-p is at plan execution time."))
                               (indirect-entries (make-hash-table :test #'equal))
                               additional-dependencies)
   (let (starting-points)
-    (labels ((ensure-component (coid)
-               (etypecase coid
-                 (component coid)
-                 ((or symbol string) (find-component module (coerce-name coid)))))
-             (ensure-operation (opoid)
+    (labels ((ensure-operation (opoid)
                (etypecase opoid
                  (symbol (make-instance opoid))
                  (operation opoid)))
@@ -221,7 +227,7 @@ Operation-executed-p is at plan execution time."))
                (gethash dependency direct-entries nil))
              (normalize-dependencies (deps)
                (loop :for (op . dep) :in deps
-                 :append (mapcan (lambda (dep* &aux (dep (ensure-component dep*)))
+                 :append (mapcan (lambda (dep* &aux (dep (ensure-component module dep*)))
                                    (typecase dep
                                      (module
                                       (normalize-dependencies
@@ -240,8 +246,9 @@ Operation-executed-p is at plan execution time."))
                          (deps (loop :for (op . deps) :in (component-depends-on operation component)
                                  :for real-deps =
                                  (set-difference (mapcar (lambda (dep)
-                                                           (find-component (component-parent component)
-                                                                           (coerce-name dep)))
+                                                           (ensure-component
+                                                            (component-parent component)
+                                                            (coerce-name dep)))
                                                          deps)
                                                  component-parents)
                                  :when real-deps :collect `(,op ,@real-deps))))
@@ -252,7 +259,7 @@ Operation-executed-p is at plan execution time."))
                                      (when deps
                                        (normalize-dependencies deps)))))
                     (dolist (d deps)
-                      (do1 (ensure-operation (first d)) (ensure-component (second d))))))
+                      (do1 (ensure-operation (first d)) (ensure-component module (second d))))))
                  (component
                   (let* ((this-op (list (type-of operation)
                                         component))
@@ -265,7 +272,7 @@ Operation-executed-p is at plan execution time."))
                       :do (add-to-tree d this-op))
                     (loop :for d :in deps
                       :do (do1 (ensure-operation (first d))
-                                  (ensure-component (second d)))))))))
+                                  (ensure-component module (second d)))))))))
       (dolist (component (module-components module))
         (do1 operation component))
       (values starting-points
@@ -819,8 +826,8 @@ components is done."
                :in (component-depends-on op sub-c)
                :for dep-op = (make-instance dep-op-name)
                :do (loop :for dep-component-name :in dep-component-names
-                     :for dep-c = (find-component (component-parent sub-c)
-                                                  dep-component-name)
+                     :for dep-c = (ensure-component (component-parent sub-c)
+                                                    dep-component-name)
                      :do (unless (operation-executed-p dep-op dep-c)
                            (return-from dependency-done-p nil))))
              t))
@@ -845,7 +852,7 @@ components is done."
   (labels ((resolve-component-path (component path)
              (if (null path)
                  component
-                 (resolve-component-path (find-component component (first path))
+                 (resolve-component-path (ensure-component component (first path))
                                          (rest path)))))
     (with-open-file (f pathname)
       (loop :for (op-name system-name . component-path) = (read f nil nil)
