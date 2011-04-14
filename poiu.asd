@@ -17,6 +17,7 @@ POIU is a variant of ASDF that may operate on your systems in parallel.
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
-    ;; Make sure asdf won't be reloaded on top of poiu.
-    :depends-on ((:version :asdf "2.010"))
+    ;; It is not currently safe to upgrade asdf itself as part of an asdf operation;
+    ;; that would require special magic handling by asdf. So we don't try.
+    ;; :depends-on ((:version :asdf "2.010"))
     :components ((:file "poiu")))
