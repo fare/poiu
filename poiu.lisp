@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.019")
-(defparameter *asdf-version-required-by-poiu* "2.010"))
+(defparameter *poiu-version* "1.020")
+(defparameter *asdf-version-required-by-poiu* "2.017.12"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -40,9 +40,9 @@ Watch QITAB for a package that does just that: SINGLE-THREADED-CCL.
 To use POIU, (1) make sure asdf.lisp is loaded.
 We require a recent enough ASDF 1.705; see specific requirement above.
 Usually, you can
-	(require :asdf)
+	(require "asdf")
 (2) configure ASDF's SOURCE-REGISTRY or its *CENTRAL-REGISTRY*, then load POIU.
-	(require :poiu)
+	(require "poiu")
 might work on SBCL and CCL. On CLISP, you can definitely
 	(asdf:load-system :poiu)
 (alternatively, you might manually (load "/path/to/poiu"),
@@ -125,6 +125,13 @@ debug them later.")
 (defgeneric can-run-in-background-p (operation)
   (:method ((operation parallelizable-operation))
     nil))
+
+(defgeneric run-in-background-p (operation component &key force))
+
+(defmethod run-in-background-p ((operation parallelizable-operation) component &key force)
+  (and (can-run-in-background-p operation)
+       (or (not (operation-executed-p operation component))
+           force)))
 
 (defgeneric dependee-operations-necessary-p (operation component)
   (:method ((op compile-op) component)
@@ -318,6 +325,7 @@ Operation-executed-p is at plan execution time."))
   (make-dependency-trees operation module))
 
 (defparameter *max-forks* 16)
+(defparameter *max-actual-forks* 0)
 
 ;;; subprocesses: data structure, ipc
 
@@ -616,6 +624,8 @@ Operation-executed-p is at plan execution time."))
         (cond
           ((funcall background-p elem)
            (incf count)
+           (when (> count *max-actual-forks*)
+             (setf *max-actual-forks* count))
            (push (make-communicating-subprocess elem thunk cleanup) pid-map))
           (t
            (unwind-protect (funcall thunk elem)
@@ -653,6 +663,8 @@ Operation-executed-p is at plan execution time."))
         (cond
           ((funcall background-p elem)
            (incf count)
+           (when (> count *max-actual-forks*)
+             (setf *max-actual-forks* count))
            (push (make-communicating-thread pending elem thunk cleanup) processes))
           (t
            (unwind-protect (funcall thunk elem)
@@ -685,12 +697,10 @@ Operation-executed-p is at plan execution time."))
                       ,background-p)))
 
 (defmethod perform :after ((operation parallel-compile-op) c)
-  (setf (gethash 'compile-op (component-operation-times c))
-        (get-universal-time)))
+  (mark-operation-done (make-instance 'compile-op) c))
 
 (defmethod perform :after ((operation parallel-load-op) c)
-  (setf (gethash 'load-op (component-operation-times c))
-        (get-universal-time)))
+  (mark-operation-done (make-instance 'load-op) c))
 
 (defmethod perform :after ((operation operation) c)
   "Record the operations and components in a stream of breadcrumbs."
@@ -717,11 +727,9 @@ Operation-executed-p is at plan execution time."))
       (unless (null ops)
         (dolist/forking
             ((op ops :result result)
-             :background-p (and (can-run-in-background-p (opspec-op op))
-                                (or (not (operation-executed-p
-                                          (opspec-op op)
-                                          (opspec-component op)))
-                                    (opspec-necessary-p op)))
+             :background-p (run-in-background-p
+                            (opspec-op op) (opspec-component op)
+                            :force (opspec-necessary-p op))
              :cleanup
              (destructuring-bind (&key failure-p performed-p &allow-other-keys)
                  result
@@ -753,30 +761,8 @@ Operation-executed-p is at plan execution time."))
               "Direct dependency table is not empty - there is a problem ~
                with the dependency trees:~%~S" (summarize-direct-deps dir)))))
 
-(defmethod do-traverse ((operation parallelizable-operation) (c module) collect)
-  (when (component-visiting-p operation c)
-    (error 'circular-dependency
-           :components (list c)))
-  (unless (component-visited-p operation c)
-    (setf (visiting-component operation c) t)
-    (loop
-      :for (required-op . deps) :in (component-depends-on operation c) :do
-      (loop
-        :for req-c :in deps
-        :for dep-c = (or (find-component
-                          (component-parent c)
-                          (coerce-name req-c)) ;; TODO: version
-                         (error 'missing-dependency
-                                :required-by c
-                                :requires req-c))
-        :for dep-op = (make-sub-operation c operation dep-c required-op) :do
-        (do-traverse dep-op dep-c collect))
-      (do-collect collect (cons operation c)))
-    (setf (visiting-component operation c) nil))
-  (visit-component operation c t))
-
 (defmethod perform :before ((operation parallel-compile-op) (c source-file))
-  (map nil #'ensure-directories-exist (output-files operation c)))
+  (ensure-all-directories-exist (asdf:output-files operation c)))
 
 (defmethod perform ((op parallel-compile-op) (c cl-source-file))
   (let ((compile-status (list
@@ -817,6 +803,10 @@ Operation-executed-p is at plan execution time."))
              (:ignore nil)))
          (unless output-truename
            (error 'compile-error :component c :operation op)))))))
+
+(defmethod perform-with-restart :around ((operation parallelizable-operation) c)
+  (unless (operation-executed-p operation c)
+    (call-next-method)))
 
 (defmethod operation-executed-p ((op parallelizable-operation) (c module))
   "A lazy operation on a module is done only when the op on all its
@@ -872,8 +862,9 @@ components is done."
   `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
 
 (defmethod traverse :around ((operation parallelizable-operation) system)
-  (or *breadcrumbs*
-      (call-next-method))) ;;; nope: (list (cons operation system))))
+  (append *breadcrumbs*
+          (remove 'system (call-next-method) :test-not #'eq
+                  :key (lambda (x) (type-of (cdr x))))))
 
 (defmethod operate :around ((operation-class parallelizable-operation) system &key
                             (breadcrumbs-to nil record-breadcrumbs-p)

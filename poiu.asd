@@ -3,11 +3,25 @@
 ;;;                                                                  ;;;
 ;;; Free Software, same MIT-style license as ASDF. See poiu.lisp.    ;;;
 ;;;                                                                  ;;;
-;;; Copyright (c) 2001-2010 ITA Software, Inc.  All rights reserved. ;;;
+;;; Copyright (c) 2001-2011 ITA Software, Inc.  All rights reserved. ;;;
 ;;;                                                                  ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(asdf:defsystem :poiu
+(in-package :asdf)
+#-asdf2 (error "XCVB requires ASDF 2")
+
+(let ((old-ver (asdf-version)))
+  (load-system :asdf)
+  (let ((min "2.017.12")
+	(ver (asdf-version)))
+    (unless (or (version-satisfies old-ver "2.014.8") ; first version to do magic upgrade
+		(equal ver old-ver))
+      (error "You must upgrade ASDF to your latest *before* you load POIU~%~
+		If you're trying to load POIU at a REPL, try again, it should work."))
+    (unless (and ver (version-satisfies ver min))
+      (error "POIU requires ASDF ~D or later, you only have ~D" min ver))))
+
+(defsystem :poiu
     :author ("Daniel Barlow" "Andreas Fuchs" "Francois-Rene Rideau")
     :maintainer "Francois-Rene Rideau"
     :licence "MIT"
@@ -17,7 +31,5 @@ POIU is a variant of ASDF that may operate on your systems in parallel.
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
-    ;; It is not currently safe to upgrade asdf itself as part of an asdf operation;
-    ;; that would require special magic handling by asdf. So we don't try.
-    ;; :depends-on ((:version :asdf "2.010"))
+    :depends-on ((:version :asdf "2.017.12"))
     :components ((:file "poiu")))
