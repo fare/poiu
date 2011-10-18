@@ -1,7 +1,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.020")
+(defparameter *poiu-version* "1.021")
 (defparameter *asdf-version-required-by-poiu* "2.017.12"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -38,7 +38,7 @@ at startup in order to use POIU (or anything that uses fork).
 Watch QITAB for a package that does just that: SINGLE-THREADED-CCL.
 
 To use POIU, (1) make sure asdf.lisp is loaded.
-We require a recent enough ASDF 1.705; see specific requirement above.
+We require a recent enough ASDF 2; see specific requirement above.
 Usually, you can
 	(require "asdf")
 (2) configure ASDF's SOURCE-REGISTRY or its *CENTRAL-REGISTRY*, then load POIU.
@@ -55,7 +55,8 @@ the dependencies in your system.
 POIU was initially written by Andreas Fuchs in 2007
 as part of an experiment funded by ITA Software, Inc.
 It was subsequently modified by Francois-Rene Rideau at ITA Software, who
-wrote the CCL port, and eventually adapted it for use with XCVB in 2009.
+adapted POIU for use with XCVB in 2009, wrote the CCL and CLISP ports,
+and refactored code between ASDF and POIU.
 The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 ;;; ASDF is
@@ -83,14 +84,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #-(or clisp clozure sbcl)
-  (error "POIU doesn't support your Lisp implementation.")
+  (error "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
   #-asdf2
   (error "POIU requires ASDF2.")
   #+asdf2
   (unless (asdf:version-satisfies (asdf:asdf-version) *asdf-version-required-by-poiu*)
-    (error "POIU ~A requires ASDF ~A or later."
+    (error "POIU ~A requires ASDF ~A or later, you only have ~A loaded."
            *poiu-version*
-           *asdf-version-required-by-poiu*))
+           *asdf-version-required-by-poiu* (asdf:asdf-version)))
+  #+clisp (require "linux")
   #+sbcl (require :sb-posix)
   (export '(parallel-load-op parallel-compile-op operation-necessary-p
             parallel-load-system parallel-compile-system))
@@ -305,7 +307,7 @@ Operation-executed-p is at plan execution time."))
 (defun summarize-direct-deps (dir)
   (sort (loop :for key :being :the :hash-keys :in dir :using (:hash-value val)
           :collect (list key
-                         (loop :for innerkey :being :the :hash-key :in val :using (:hash-value v)
+                         (loop :for innerkey :being :the :hash-keys :in val :using (:hash-value v)
                            :when v :collect innerkey)))
         #'< :key (lambda (depl) (length (cdr depl)))))
 
