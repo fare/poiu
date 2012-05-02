@@ -1,7 +1,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.021")
+(defparameter *poiu-version* "1.022")
 (defparameter *asdf-version-required-by-poiu* "2.017.12"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -372,7 +372,7 @@ Operation-executed-p is at plan execution time."))
 (progn
 
 (defun posix-exit (n)
-  (sb-unix:unix-exit n))
+  (sb-ext:quit :recklessly-p t :unix-status n))
 
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
