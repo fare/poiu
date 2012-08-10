@@ -1,8 +1,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.022")
-(defparameter *asdf-version-required-by-poiu* "2.017.12"))
+(defparameter *poiu-version* "1.023")
+(defparameter *asdf-version-required-by-poiu* "2.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -31,7 +31,7 @@ with a chance to debug the issue and restart the operation.
 
 POIU was currently only made to work with SBCL, CCL and CLISP.
 Porting to another Lisp implementation that supports ASDF
-should not be difficult. [Note: CLISP port somehow seems less stable.]
+should not be difficult. [Note: the CLISP port somehow seems less stable.]
 
 Warning to CCL users: you need to save a CCL image that doesn't start threads
 at startup in order to use POIU (or anything that uses fork).
@@ -767,19 +767,28 @@ Operation-executed-p is at plan execution time."))
   (ensure-all-directories-exist (asdf:output-files operation c)))
 
 (defmethod perform ((op parallel-compile-op) (c cl-source-file))
-  (let ((compile-status (list
-                         :input-file (car (input-files op c))
-                         :performed-p t
-                         :output-truename (car (output-files op c))
-                         :warnings-p nil
-                         :failure-p t))
-        warnings-p failure-p output-truename)
+  (let* ((source-file (component-pathname c))
+	 ;; on some implementations, there are more than one output-file,
+	 ;; but the first one should always be the primary fasl that gets loaded.
+	 (output-file (first (output-files op c)))
+	 (compile-status (list
+			  :input-file source-file
+			  :performed-p t
+			  :output-truename output-file
+			  :warnings-p nil
+			  :failure-p t))
+	 warnings-p failure-p output-truename)
     (unwind-protect (progn
                       (multiple-value-setq (output-truename warnings-p failure-p)
-                          (compile-file (car (input-files op c))
-                                        :output-file (car (output-files op c))))
+			(with-compilation-unit (:override t)
+			  (call-with-around-compile-hook
+			   c #'(lambda (&rest flags)
+				 (apply *compile-op-compile-file-function* source-file
+					:output-file output-file
+					:external-format (component-external-format c)
+					(append flags (compile-op-flags op)))))))
                       (setf compile-status
-                            (list :input-file (car (input-files op c))
+                            (list :input-file source-file
                                   :performed-p t
                                   :output-truename output-truename
                                   :warnings-p warnings-p
