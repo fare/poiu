@@ -6,7 +6,7 @@
 ;; (clisp) : \
 ; clisp -i ../asdf/asdf.lisp -i test.lisp
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
-;; esac ; exit
+;; esac 2>&1 | tee foo ; exit
 
 (in-package :cl-user)
 
@@ -115,6 +115,10 @@ outputs a tag plus a list of source expressions and their resulting values, retu
           (every #'probe-file* out-files)
           (>= earliest-out latest-in))))))))
 
+(defvar *fare* (asdf::user-homedir))
+(defun subnamestring (base sub)
+  (namestring (asdf::subpathname base sub)))
+
 (block nil
   (handler-bind ((error #'(lambda (condition)
                             (format t "~&ERROR:~%~A~%" condition)
@@ -122,11 +126,12 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (format t "~&ERROR:~%~A~%" condition)
                             (finish-output)
                             (return))))
-    (asdf:parallel-load-system :exscribe :verbose t)
+    (asdf:parallel-load-system :exscribe :verbose t :force t)
     (funcall (find-symbol "PROCESS-COMMAND-LINE" "EXSCRIBE")
-             '("-I" "/home/fare/fare/www" "-o" "-" "-H" "/home/fare/fare/www/index.scr"))))
+             `("-I" ,(subnamestring *fare* "fare/www/")
+               "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
 
 (format t "~&~S~%" (asdf::implementation-identifier))
 (format t "~&Compiled with as many as ~D forked subprocesses~%" *max-actual-forks*)
 
-(cl-launch:quit 0)
+(asdf::posix-exit 0)

@@ -1,7 +1,8 @@
+;; -*- Lisp ; coding: utf-8 -*-
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.023")
+(defparameter *poiu-version* "1.024")
 (defparameter *asdf-version-required-by-poiu* "2.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -81,6 +82,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 ;;; OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 ;;; WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+(declaim (optimize debug safety))
+
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #-(or clisp clozure sbcl)
@@ -98,7 +101,61 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
 
-(define-modify-macro nconcf (x) append) ;;nconc
+(defclass simple-queue ()
+  ((head :accessor queue-head :initarg :head)))
+(defmethod queue-tail ((q simple-queue))
+  (car (queue-head q)))
+(defmethod (setf queue-tail) (v (q simple-queue))
+  (setf (car (queue-head q)) v))
+(defun simple-queue (&optional contents)
+  (let ((c (cons 0 (copy-list contents))))
+    (setf (car c) (last c))
+    (make-instance 'simple-queue :head c)))
+(defmethod enqueue ((q simple-queue) x)
+  (let ((c (list x)))
+    (setf (cdr (queue-tail q)) c
+          (queue-tail q) c)
+    t))
+(defmethod enqueue-new ((q simple-queue) x &rest keys &key test test-not)
+  (declare (ignore test test-not))
+  (unless (apply #'find x (cdr (queue-head q)) keys)
+    (enqueue q x)))
+(defmethod enqueue-in-front ((q simple-queue) x)
+  (if (queue-empty-p q)
+      (enqueue q x)
+      (push x (cdr (queue-head q))))
+  t)
+(defmethod queue-empty-p ((q simple-queue))
+  (null (cdr (queue-head q))))
+(defmethod dequeue ((q simple-queue))
+  (when (null (cdr (queue-head q)))
+    (error "Trying to dequeue from an empty queue!"))
+  (prog1 (pop (cdr (queue-head q)))
+    (when (null (cdr (queue-head q)))
+      (setf (queue-tail q) (queue-head q)))))
+(defmethod enqueue-many ((q simple-queue) list)
+  (dolist (x list) (enqueue q x)) (values))
+(defmethod queue-contents ((q simple-queue))
+  (copy-list (cdr (queue-head q))))
+(defmethod dequeue-all ((q simple-queue))
+  (prog1 (cdr (queue-head q))
+    (setf (queue-tail q) (queue-head q) (cdr (queue-head q)) nil)))
+(defmethod move-queue ((destination simple-queue) (origin simple-queue))
+  (enqueue-many destination (dequeue-all origin)))
+(defun call-with-queue (fun q)
+  (loop :until (queue-empty-p q) :do (let ((x (dequeue q))) (funcall fun x))))
+(defmacro with-queue ((var qvar &optional (qval '(simple-queue))) &body body)
+  `(let ((,qvar ,qval)) (call-with-queue (lambda (,var) ,@body) ,qvar)))
+
+(defun ensure-operation (opoid)
+  (etypecase opoid
+    (symbol (make-instance opoid))
+    (operation opoid)))
+
+(defun ensure-operation-name (opoid)
+  (etypecase opoid
+    (symbol opoid)
+    (operation (type-of opoid))))
 
 (defmacro remove-method-if-defined
     (method-name specializers &optional qualifiers)
@@ -110,10 +167,84 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                                  ',qualifiers
                                  ',specializers))))
 
+(defun reconstitute-deferred-warnings (constructor-list)
+  #-sbcl (declare (ignore constructor-list))
+  #+sbcl
+  (dolist (item constructor-list)
+    ;; Each item is (symbol . adjustment) where the adjustment depends on the symbol.
+    ;; For *undefined-warnings*, the adjustment is a list of initargs.
+    ;; For everything else, it's an integer.
+    (destructuring-bind (symbol . adjustment) item
+      (ecase symbol
+        (sb-c::*undefined-warnings*
+         (setf sb-c::*undefined-warnings*
+               (nconc (mapcan
+                       #'(lambda (stuff)
+                           (destructuring-bind (kind rname count . rest) stuff
+                             (let ((name (reconstitute-symbol rname)))
+                               (if (and (eq kind :function) (fboundp name))
+                                   nil
+                                   (list
+                                    (sb-c::make-undefined-warning
+                                     :name name
+                                     :kind kind
+                                     :count count
+                                     :warnings
+                                     (mapcar #'(lambda (x)
+                                                 (apply #'sb-c::make-compiler-error-context x))
+                                             rest)))))))
+                       adjustment)
+                      sb-c::*undefined-warnings*)))
+        (t
+         (set symbol (+ (symbol-value symbol) adjustment)))))))
+
+(defun reify-symbol (sym)
+  (vector (symbol-name sym) (package-name (symbol-package sym))))
+(defun reconstitute-symbol (sym)
+  (intern (aref sym 0) (aref sym 1)))
+
+(defun reify-undefined-warnings (warning)
+  #+sbcl
+  (list* (sb-c::undefined-warning-kind warning)
+         (reify-symbol (sb-c::undefined-warning-name warning))
+         (sb-c::undefined-warning-count warning)
+         (mapcar
+          #'(lambda (frob)
+              ;; the lexenv slot can be ignored for reporting purposes
+              `(:enclosing-source ,(sb-c::compiler-error-context-enclosing-source frob)
+                :source ,(sb-c::compiler-error-context-source frob)
+                :original-source ,(sb-c::compiler-error-context-original-source frob)
+                :context ,(sb-c::compiler-error-context-context frob)
+                :file-name ,(sb-c::compiler-error-context-file-name frob) ; a pathname
+                :file-position ,(sb-c::compiler-error-context-file-position frob) ; an integer
+                :original-source-path ,(sb-c::compiler-error-context-original-source-path frob)))
+          (sb-c::undefined-warning-warnings warning))))
+
+(defun get-compilation-unit-report ()
+  #-sbcl nil
+  #+sbcl
+  (when sb-c::*in-compilation-unit*
+    ;; Try to send nothing through the pipe if nothing needs to be accumulated
+    `(,@(when sb-c::*undefined-warnings*
+          `((sb-c::*undefined-warnings* . ,(mapcar #'reify-undefined-warnings sb-c::*undefined-warnings*))))
+      ,@(loop for what in '(sb-c::*aborted-compilation-unit-count*
+                            sb-c::*compiler-error-count*
+                            sb-c::*compiler-warning-count*
+                            sb-c::*compiler-style-warning-count*
+                            sb-c::*compiler-note-count*)
+              for value = (symbol-value what)
+              when (plusp value)
+                collect `(,what . ,value)))))
+
 (defclass parallelizable-operation (operation) ())
 
 (defclass parallel-op (parallelizable-operation)
   ((operations :initarg :operations :accessor parallel-operations)))
+
+(defclass parallel-compile-op (compile-op parallelizable-operation) ())
+
+(defclass parallel-load-op (load-op parallelizable-operation) ())
+
 
 (defvar *breadcrumb-stream* (make-broadcast-stream)
   "Stream that records the trail of operations on components.
@@ -125,15 +256,20 @@ debug them later.")
   "Actual breadcrumbs found, to override traversal for replay and debugging")
 
 (defgeneric can-run-in-background-p (operation)
+  (:method ((operation symbol))
+    (can-run-in-background-p (make-instance operation)))
   (:method ((operation parallelizable-operation))
-    nil))
+    nil)
+  (:method ((op parallel-compile-op))
+    t))
 
-(defgeneric run-in-background-p (operation component &key force))
-
-(defmethod run-in-background-p ((operation parallelizable-operation) component &key force)
-  (and (can-run-in-background-p operation)
-       (or (not (operation-executed-p operation component))
-           force)))
+(defgeneric run-in-background-p (operation component &key force)
+  (:method ((operation symbol) component &key force)
+    (run-in-background-p (make-instance operation) component :force force))
+  (:method ((operation parallelizable-operation) component &key force)
+    (and (can-run-in-background-p operation)
+         (or (not (operation-executed-p operation component))
+             force))))
 
 (defgeneric dependee-operations-necessary-p (operation component)
   (:method ((op compile-op) component)
@@ -151,13 +287,6 @@ debug them later.")
     (declare (ignorable op component))
     nil))
 
-(defclass parallel-compile-op (compile-op parallelizable-operation) ())
-
-(defmethod can-run-in-background-p ((op parallel-compile-op))
-  t)
-
-(defclass parallel-load-op (load-op parallelizable-operation) ())
-
 (defgeneric unparallelize-operation (operation))
 (defmethod unparallelize-operation ((op parallel-load-op))
   (load-time-value (make-instance 'load-op)))
@@ -169,7 +298,9 @@ debug them later.")
 
 (defgeneric operation-executed-p (operation component)
   (:documentation "operation-done-p is at planning time.
-Operation-executed-p is at plan execution time."))
+Operation-executed-p is at plan execution time.")
+  (:method ((operation symbol) component)
+    (operation-executed-p (make-instance operation) component)))
 
 (defun parallelize-deed (deed)
   (case (car deed)
@@ -209,18 +340,13 @@ Operation-executed-p is at plan execution time."))
          (error 'missing-component :requires coid :parent parent))
        c))))
 
-(defun make-dependency-trees (operation module &optional
-                              ;; component -> dependency map
-                              (direct-entries (make-hash-table :test #'equal))
-                              ;; dependency -> component map
-                              (indirect-entries (make-hash-table :test #'equal))
-                              additional-dependencies)
-  (let (starting-points)
-    (labels ((ensure-operation (opoid)
-               (etypecase opoid
-                 (symbol (make-instance opoid))
-                 (operation opoid)))
-             (add-to-tree (dependency this-operation)
+(defun make-dependency-trees (operation module)
+  (let ((starting-points (simple-queue))
+        ;; component -> dependency map
+        (direct-entries (make-hash-table :test #'equal))
+        ;; dependency -> component map
+        (indirect-entries (make-hash-table :test #'equal)))
+    (labels ((add-to-tree (dependency this-operation)
                ;; don't record dependencies from component on itself
                (when (equal dependency this-operation)
                  (return-from add-to-tree nil))
@@ -233,73 +359,76 @@ Operation-executed-p is at plan execution time."))
                (setf (gethash dependency (gethash this-operation direct-entries)) t)
                (setf (gethash this-operation (gethash dependency indirect-entries)) t))
              (is-in-tree-p (dependency)
-               (gethash dependency direct-entries nil))
-             (normalize-dependencies (deps)
-               (loop :for (op . dep) :in deps
-                 :append (mapcan (lambda (dep* &aux (dep (ensure-component module dep*)))
-                                   (typecase dep
-                                     (module
-                                      (normalize-dependencies
-                                       `((,(type-of (ensure-operation op))
-                                           ,@(module-components dep)))))
-                                     (component (list (list op dep)))))
-                                 dep)))
-             (do1 (operation component)
-               (when (is-in-tree-p (list (type-of operation) component))
-                 (return-from do1 nil))
-               (typecase component
-                 (module
-                  (let* ((component-parents
-                          (loop :for parent = component :then (component-parent parent)
-                            :while parent :collect parent))
-                         (deps (loop :for (op . deps) :in (component-depends-on operation component)
-                                 :for real-deps =
-                                 (set-difference (mapcar (lambda (dep)
-                                                           (ensure-component
-                                                            (component-parent component)
-                                                            (coerce-name dep)))
-                                                         deps)
-                                                 component-parents)
+               (gethash dependency direct-entries))
+             (normalize-dependencies (parent deps)
+               (let ((queue (simple-queue)))
+                 (enqueue-normalized-dependencies queue parent deps)
+                 (dequeue-all queue)))
+             (enqueue-normalized-dependencies (queue parent deps)
+               (loop :for (op . components) :in deps :do
+                 (enqueue-normalized-dependencies-entry
+                  queue parent (ensure-operation-name op) components)))
+             (enqueue-normalized-dependencies-entry (queue parent op-name components)
+               (loop :for component :in components
+                     :for comp = (ensure-component parent component) :do
+                       (etypecase comp
+                         (module
+                          (enqueue-normalized-dependencies-entry
+                           queue comp op-name (module-components comp)))
+                         (component (enqueue queue (list op-name comp))))))
+             (do-components (operation module additional-dependencies)
+               (dolist (component (module-components module))
+                 (do1 operation component additional-dependencies)))
+             (do1 (operation component additional-dependencies)
+               (let ((operation (ensure-operation-name operation))
+                     (parent (component-parent component)))
+                 (when (is-in-tree-p (list operation component))
+                   (return-from do1))
+                 (etypecase component
+                   (module
+                    (let* ((component-parents
+                             (loop :for parent = component :then (component-parent parent)
+                                   :while parent :collect parent))
+                           (deps (loop :for (op . deps) :in (component-depends-on operation component)
+                                       :for real-deps
+                                         = (set-difference (mapcar (lambda (dep) (ensure-component parent dep)) deps)
+                                                           component-parents)
                                  :when real-deps :collect `(,op ,@real-deps))))
-                    (nconcf starting-points
-                            (make-dependency-trees
-                             operation component direct-entries indirect-entries
-                             (append additional-dependencies
-                                     (when deps
-                                       (normalize-dependencies deps)))))
-                    (dolist (d deps)
-                      (do1 (ensure-operation (first d)) (ensure-component module (second d))))))
-                 (component
-                  (let* ((this-op (list (type-of operation)
-                                        component))
-                         (deps (normalize-dependencies
-                                (component-depends-on operation component)))
-                         (all-deps (append additional-dependencies deps)))
-                    (unless all-deps
-                      (pushnew this-op starting-points :test #'equal))
-                    (loop :for d :in all-deps
-                      :do (add-to-tree d this-op))
-                    (loop :for d :in deps
-                      :do (do1 (ensure-operation (first d))
-                                  (ensure-component module (second d)))))))))
-      (dolist (component (module-components module))
-        (do1 operation component))
+                      (do-components
+                        operation component
+                        (append additional-dependencies (normalize-dependencies parent deps)))
+                      (loop :for (op comp) :in deps :do
+                        (do1 op (ensure-component module comp) additional-dependencies))))
+                   (component
+                    (let* ((action (list operation component))
+                           (deps (normalize-dependencies (component-parent component)
+                                                         (component-depends-on operation component)))
+                           (all-deps (append additional-dependencies deps)))
+                      (unless all-deps
+                        (enqueue-new starting-points action :test #'equal))
+                      (loop :for d :in all-deps :do
+                        (add-to-tree d action))
+                      (loop :for (op comp) :in deps :do
+                        (do1 op (ensure-component module comp) additional-dependencies))))))))
+      (do-components (ensure-operation-name operation) module nil)
       (values starting-points
               indirect-entries
               direct-entries))))
 
 (defun mark-as-done (operation component indirect-deps direct-deps)
-  (let* ((this-op (list operation component))
-         (dependees (when (gethash this-op indirect-deps)
+  ;; marks the action of operation on component as done in the deps hash-tables,
+  ;; returns a list of new actions that are enabled by it being done.
+  (let* ((operation (ensure-operation-name operation))
+         (action (list operation component))
+         (dependees (when (gethash action indirect-deps)
                       (loop :for dependee :being
-                        :the :hash-keys :in (gethash this-op indirect-deps)
+                        :the :hash-keys :in (gethash action indirect-deps)
                         :collect dependee))))
-    (assert (symbolp (first this-op)))
-    (remhash this-op direct-deps)
+    (remhash action direct-deps)
     (loop :for dependee :in dependees
       :for dependee-deps = (gethash dependee direct-deps)
       :do (assert dependee-deps)
-      :do (remhash this-op dependee-deps)
+          (remhash action dependee-deps)
       :when (zerop (hash-table-count dependee-deps))
       :collect dependee
       :and :do (remhash dependee direct-deps))))
@@ -312,19 +441,20 @@ Operation-executed-p is at plan execution time."))
         #'< :key (lambda (depl) (length (cdr depl)))))
 
 (defun check-dependency-trees (module starting-points indirect-entries direct-entries)
-  (loop :until (null starting-points) :do
-    (destructuring-bind (op-name component) (pop starting-points)
-      (nconcf starting-points
-              (mark-as-done op-name component
-                            indirect-entries direct-entries))))
+  ;; This destructively checks that the dependency tree model is coherent.
+  (with-queue (action action-queue starting-points)
+    (destructuring-bind (op-name component) action
+      (enqueue-many action-queue
+                    (mark-as-done op-name component
+                                  indirect-entries direct-entries))))
   (unless (zerop (hash-table-count direct-entries))
     (error "Cycle detected in the dependency graph of ~A. Direct dependencies are:~%~S"
            module (summarize-direct-deps direct-entries))))
 
 (defun make-checked-dependency-trees (operation module)
-  (multiple-value-call #'check-dependency-trees
+  (multiple-value-call #'check-dependency-trees ;; do it once, destructively check the results
     module (make-dependency-trees operation module))
-  (make-dependency-trees operation module))
+  (make-dependency-trees operation module)) ;; do it again.
 
 (defparameter *max-forks* 16)
 (defparameter *max-actual-forks* 0)
@@ -371,8 +501,8 @@ Operation-executed-p is at plan execution time."))
 #+sbcl
 (progn
 
-(defun posix-exit (n)
-  (sb-ext:quit :recklessly-p t :unix-status n))
+(defun posix-exit (code)
+  (sb-posix:exit code))
 
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
@@ -523,7 +653,14 @@ Operation-executed-p is at plan execution time."))
              (when (find-package :sb-sprof)
                (funcall (intern "STOP-PROFILING" :sb-sprof)))
              (let ((*current-subprocess* proc))
-               #+sbcl (sb-ext:disable-debugger)
+               #+sbcl
+               (progn
+                 (sb-ext:disable-debugger)
+                 ;; If POIU performs some part of a plan serially by compiling in the parent Lisp,
+                 ;; its warnings should not propagate to children.
+                 ;; In fact, the child's warning counters should probably be reset too,
+                 ;; but the more visible brain-damage was the warning list.
+                 (setf sb-c::*undefined-warnings* nil))
                #+clozure (setf ccl::*batch-flag* t)
                (unwind-protect (funcall continuation data)
                  (close (status-pipe proc))
@@ -587,7 +724,8 @@ Operation-executed-p is at plan execution time."))
 
 ;;; Handling multiple processes
 
-(defun call-queue/forking (thunk queue-empty-p queue-popper &key announcer cleanup (background-p (constantly t)))
+(defun call-queue/forking (thunk queue
+			   &key announce cleanup (background-p (constantly t)))
   ;; assumes a single-threaded parent process
   (declare (optimize debug))
   (let ((elem nil)
@@ -596,11 +734,11 @@ Operation-executed-p is at plan execution time."))
     (loop
       ;;;(warn "cqf~% count: ~S~% elem: ~S~% map: ~S" count elem pid-map);XXX
       (cond (;; nothing to do or wait for anymore.
-             (and (funcall queue-empty-p) (null pid-map))
+             (and (queue-empty-p queue) (null pid-map))
              (return))
             (;; we've exceeded the subprocess limit. Wait for a few before continuing.
              (or (>= count *max-forks*)
-                 (funcall queue-empty-p))
+                 (queue-empty-p queue))
              (multiple-value-bind (pid status)
                  (timed-do (*time-spent-waiting*) (posix-wait))
                (flet ((cleanup (entry exit-status)
@@ -620,9 +758,9 @@ Operation-executed-p is at plan execution time."))
                        (setf pid-map nil count 0)
                        (dolist (entry entries)
                          (cleanup entry nil))))))))
-      (unless (funcall queue-empty-p)
-        (setf elem (funcall queue-popper))
-        (funcall announcer elem)
+      (unless (queue-empty-p queue)
+        (setf elem (dequeue queue))
+        (funcall announce elem)
         (cond
           ((funcall background-p elem)
            (incf count)
@@ -632,9 +770,9 @@ Operation-executed-p is at plan execution time."))
           (t
            (unwind-protect (funcall thunk elem)
              (funcall cleanup elem *default-process-result*))))))
-    (assert (and (funcall queue-empty-p) (null pid-map)) ()
-            "List of processes or list of things to do isn't empty: (~S...)/~S~%"
-            (funcall queue-popper)
+    (assert (and (queue-empty-p queue) (null pid-map)) ()
+            "List of processes or list of things to do isn't empty: ~S / ~S~%"
+            (queue-contents queue)
             pid-map))
   nil)
 
@@ -678,20 +816,20 @@ Operation-executed-p is at plan execution time."))
   nil)
 |#
 
-(defmacro dolist/forking (((var list &key
-                                (result (gensym "RESULT")))
-                           &key (background-p t) (announce nil) (cleanup nil))
+(defmacro dolist/forking ((var queue
+                           &key
+                             (result (gensym "RESULT"))
+                             (background-p t) (announce nil) (cleanup nil))
                           &body body)
   `(call-queue/forking
     #'(lambda (,var)
         (declare (ignorable ,var))
         ,@body)
-    #'(lambda () (null ,list))
-    #'(lambda () (pop ,list))
+    ,queue
     :cleanup #'(lambda (,var ,result)
                   (declare (ignorable ,var ,result))
                   ,cleanup)
-    :announcer #'(lambda (,var)
+    :announce #'(lambda (,var)
                   (declare (ignorable ,var))
                   ,announce)
     :background-p #'(lambda (,var)
@@ -717,51 +855,54 @@ Operation-executed-p is at plan execution time."))
     (force-output *breadcrumb-stream*)))
 
 (defmethod perform-with-restarts ((operation parallelizable-operation) (module module))
-  (multiple-value-bind (ops ind dir) (make-checked-dependency-trees operation module)
-    (labels ((opspec-op-name (opspec)
-               (first opspec))
-             (opspec-op (opspec)
-               (make-instance (first opspec)))
-             (opspec-component (opspec)
-               (second opspec))
-             (opspec-necessary-p (opspec)
-               (third opspec)))
-      (unless (null ops)
+  (multiple-value-bind (action-queue ind dir) (make-checked-dependency-trees operation module)
+    (unless (queue-empty-p action-queue)
+      (let ((n (hash-table-count dir))
+            (all-compilation-unit-reports nil))
         (dolist/forking
-            ((op ops :result result)
-             :background-p (run-in-background-p
-                            (opspec-op op) (opspec-component op)
-                            :force (opspec-necessary-p op))
+            (action action-queue
+             :result result
+             :background-p
+             (destructuring-bind (op comp &optional necessary-p) action
+               (run-in-background-p op comp :force necessary-p))
              :cleanup
-             (destructuring-bind (&key failure-p performed-p &allow-other-keys)
+             (destructuring-bind (&key input-file compilation-unit-report
+                                    failure-p performed-p &allow-other-keys)
                  result
-               (when failure-p
-                 (finish-outputs)
-                 (warn "Operation ~A has failure-p set. Retrying in this process." op)
-                 (finish-outputs)
-                 (perform-with-restarts (opspec-op op) (opspec-component op)))
-               (dolist (opened-op (mark-as-done (opspec-op-name op)
-                                                (opspec-component op)
-                                                ind dir))
-                 (when (or (opspec-necessary-p op)
-                           (and performed-p
-                                (dependee-operations-necessary-p
-                                 (opspec-op op)
-                                 (opspec-component op))))
-                   (nconcf opened-op
-                           (list (operation-necessary-p
-                                  (opspec-op opened-op)
-                                  (opspec-component opened-op)))))
-                 (if (can-run-in-background-p (opspec-op opened-op))
-                     (push opened-op ops)
-                     (nconcf ops (list opened-op))))))
-          (when (or (not (operation-executed-p (opspec-op op) (opspec-component op)))
-                    (opspec-necessary-p op))
-            (perform-with-restarts (opspec-op op) (opspec-component op)))))
-      (assert (zerop (hash-table-count dir))
-              (dir ind)
-              "Direct dependency table is not empty - there is a problem ~
-               with the dependency trees:~%~S" (summarize-direct-deps dir)))))
+               (when input-file
+                 (decf n)
+                 (format t "~@[[~4d to go] ~]Done compiling ~A~%"
+                         ;; Don't show negatives. (It's good enough for me)
+                         ;; I really don't care that or why I'm counting wrong.
+                         n input-file)
+                 (finish-outputs))
+               (when compilation-unit-report
+                 (push compilation-unit-report all-compilation-unit-reports))
+               (destructuring-bind (operation component &optional necessary-p) action
+                 (when failure-p
+                   (finish-outputs)
+                   (warn "Action ~A has failure-p set. Retrying in this process." action)
+                   (finish-outputs)
+                   (perform-with-restarts (ensure-operation operation) component))
+                 (loop :for (opened-op opened-comp) :in (mark-as-done operation component ind dir)
+                       :for opened-necessary-p
+                         = (and (or necessary-p
+                                    (and performed-p
+                                         (dependee-operations-necessary-p operation component)))
+                                (operation-necessary-p opened-op opened-comp))
+                       :for opened-action = (list opened-op opened-comp opened-necessary-p)
+                       :do (if (can-run-in-background-p opened-op)
+                               (enqueue-in-front action-queue opened-action)
+                               (enqueue action-queue opened-action))))))
+          (destructuring-bind (operation component &optional necessary-p) action
+            (when (or (not (operation-executed-p operation component))
+                      necessary-p)
+              (perform-with-restarts (ensure-operation operation) component))))
+        (mapc #'reconstitute-deferred-warnings all-compilation-unit-reports)))
+    (assert (zerop (hash-table-count dir))
+            (dir ind)
+            "Direct dependency table is not empty - there is a problem ~
+               with the dependency trees:~%~S" (summarize-direct-deps dir))))
 
 (defmethod perform :before ((operation parallel-compile-op) (c source-file))
   (ensure-all-directories-exist (asdf:output-files operation c)))
@@ -775,6 +916,7 @@ Operation-executed-p is at plan execution time."))
 			  :input-file source-file
 			  :performed-p t
 			  :output-truename output-file
+                          :compilation-unit-report (get-compilation-unit-report)
 			  :warnings-p nil
 			  :failure-p t))
 	 warnings-p failure-p output-truename)
@@ -799,14 +941,14 @@ Operation-executed-p is at plan execution time."))
          (process-return *current-subprocess* compile-status))
         (t
          (when warnings-p
-           (case (operation-on-warnings op)
+           (ecase (operation-on-warnings op)
              (:warn (warn
                      "~@<COMPILE-FILE warned while performing ~A on ~A.~@:>"
                      op c))
              (:error (error 'compile-warned :component c :operation op))
              (:ignore nil)))
          (when failure-p
-           (case (operation-on-failure op)
+           (ecase (operation-on-failure op)
              (:warn (warn
                      "~@<COMPILE-FILE failed while performing ~A on ~A.~@:>"
                      op c))
