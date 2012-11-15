@@ -2,7 +2,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.024")
+(defparameter *poiu-version* "1.025")
 (defparameter *asdf-version-required-by-poiu* "2.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -101,6 +101,16 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
 
+
+;; Some general purpose data structures we use
+(defgeneric table-values (table))
+(defmethod table-values ((table hash-table))
+  (loop :for val :being :the :hash-values :of table :collect val))
+
+(defgeneric empty-p (collection))
+(defmethod empty-p ((table hash-table))
+  (zerop (hash-table-count table)))
+
 (defclass simple-queue ()
   ((head :accessor queue-head :initarg :head)))
 (defmethod queue-tail ((q simple-queue))
@@ -121,11 +131,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (unless (apply #'find x (cdr (queue-head q)) keys)
     (enqueue q x)))
 (defmethod enqueue-in-front ((q simple-queue) x)
-  (if (queue-empty-p q)
+  (if (empty-p q)
       (enqueue q x)
       (push x (cdr (queue-head q))))
   t)
-(defmethod queue-empty-p ((q simple-queue))
+(defmethod empty-p ((q simple-queue))
   (null (cdr (queue-head q))))
 (defmethod dequeue ((q simple-queue))
   (when (null (cdr (queue-head q)))
@@ -140,10 +150,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmethod dequeue-all ((q simple-queue))
   (prog1 (cdr (queue-head q))
     (setf (queue-tail q) (queue-head q) (cdr (queue-head q)) nil)))
-(defmethod move-queue ((destination simple-queue) (origin simple-queue))
-  (enqueue-many destination (dequeue-all origin)))
 (defun call-with-queue (fun q)
-  (loop :until (queue-empty-p q) :do (let ((x (dequeue q))) (funcall fun x))))
+  (loop :until (empty-p q) :do (let ((x (dequeue q))) (funcall fun x))))
 (defmacro with-queue ((var qvar &optional (qval '(simple-queue))) &body body)
   `(let ((,qvar ,qval)) (call-with-queue (lambda (,var) ,@body) ,qvar)))
 
@@ -429,7 +437,7 @@ Operation-executed-p is at plan execution time.")
       :for dependee-deps = (gethash dependee direct-deps)
       :do (assert dependee-deps)
           (remhash action dependee-deps)
-      :when (zerop (hash-table-count dependee-deps))
+      :when (empty-p dependee-deps)
       :collect dependee
       :and :do (remhash dependee direct-deps))))
 
@@ -447,7 +455,7 @@ Operation-executed-p is at plan execution time.")
       (enqueue-many action-queue
                     (mark-as-done op-name component
                                   indirect-entries direct-entries))))
-  (unless (zerop (hash-table-count direct-entries))
+  (unless (empty-p direct-entries)
     (error "Cycle detected in the dependency graph of ~A. Direct dependencies are:~%~S"
            module (summarize-direct-deps direct-entries))))
 
@@ -729,90 +737,86 @@ Operation-executed-p is at plan execution time.")
   ;; assumes a single-threaded parent process
   (declare (optimize debug))
   (let ((elem nil)
-        (pid-map nil)
-        (count 0))
+        (processes (make-hash-table :test 'equal)))
     (loop
-      ;;;(warn "cqf~% count: ~S~% elem: ~S~% map: ~S" count elem pid-map);XXX
+      ;;;(warn "cqf~% count: ~S~% elem: ~S~% map: ~S" (hash-table-count processes) elem (table-values processes))
       (cond (;; nothing to do or wait for anymore.
-             (and (queue-empty-p queue) (null pid-map))
+             (and (empty-p queue) (empty-p processes))
              (return))
             (;; we've exceeded the subprocess limit. Wait for a few before continuing.
-             (or (>= count *max-forks*)
-                 (queue-empty-p queue))
+             (or (>= (hash-table-count processes) *max-forks*)
+                 (empty-p queue))
              (multiple-value-bind (pid status)
                  (timed-do (*time-spent-waiting*) (posix-wait))
                (flet ((cleanup (entry exit-status)
                         (funcall (process-cleanup entry) (process-data entry)
                                  (process-result exit-status (status-pipe entry)))))
                  (if pid
-                     (let ((entry (find pid pid-map :key #'process-pid)))
-                       (assert entry () "couln't find the pid ~A in pid-map ~S" pid pid-map)
-                       (setf pid-map (delete entry pid-map))
-                       (decf count)
+                     (let ((entry (gethash pid processes)))
+                       (assert entry () "couln't find the pid ~A in processes ~S" pid (table-values processes))
+                       (remhash pid processes)
                        (cleanup entry (posix-wexitstatus status)))
                      ;; clisp can currently drop signals and get a ENOCHILD...
-                     #-sbcl ;; avoid a compiler note when things aren't broken
-                     (let ((entries pid-map))
+                     (let ((entries (table-values processes)))
                        (warn "No child left: we must have dropped a signal!")
                        ;;;(warn "blah ~S" entries) ;XXX
-                       (setf pid-map nil count 0)
+                       (clrhash processes)
                        (dolist (entry entries)
                          (cleanup entry nil))))))))
-      (unless (queue-empty-p queue)
+      (unless (empty-p queue)
         (setf elem (dequeue queue))
         (funcall announce elem)
         (cond
           ((funcall background-p elem)
-           (incf count)
-           (when (> count *max-actual-forks*)
-             (setf *max-actual-forks* count))
-           (push (make-communicating-subprocess elem thunk cleanup) pid-map))
+           (when (> (hash-table-count processes) *max-actual-forks*)
+             (setf *max-actual-forks* (hash-table-count processes)))
+           (let ((process (make-communicating-subprocess elem thunk cleanup)))
+             (setf (gethash (process-pid process) processes) process)))
           (t
            (unwind-protect (funcall thunk elem)
              (funcall cleanup elem *default-process-result*))))))
-    (assert (and (queue-empty-p queue) (null pid-map)) ()
+    (assert (and (empty-p queue) (empty-p processes)) ()
             "List of processes or list of things to do isn't empty: ~S / ~S~%"
             (queue-contents queue)
-            pid-map))
+            (table-values processes)))
   nil)
 
 #|
 #+clozure
-(defun call-queue/threading (thunk queue-empty-p queue-popper &key cleanup (background-p (constantly t)))
+(defun call-queue/threading (thunk queue &key cleanup (background-p (constantly t)))
   ;; will use threads instead of fork
   (declare (optimize debug))
   (let ((elem nil)
-        (processes nil)
-        (count 0)
+        (processes (make-hash-table :test 'equal))
         (pending (ccl:make-semaphore)))
     (loop
       (cond (;; nothing to do or wait for anymore.
-             (and (funcall queue-empty-p) (null processes))
+             (and (empty-p queue) (empty-p processes))
              (return))
             (;; we've exceeded the subprocess limit. Wait for a few before continuing.
-             (or (>= count *max-forks*)
-                 (funcall queue-empty-p))
+             (or (>= (hash-table-count processes) *max-forks*)
+                 (empty-p queue))
              (timed-do (*time-spent-waiting*) (ccl::wait-on-semaphore pending))
-             (let ((entry (find-if #'process-complete-p processes)))
+             (let ((entry (loop :for process :being :the :hash-values :of processes
+                                :thereis (when (process-complete-p process) process))))
                (assert entry () "couln't find a completed process in ~S" processes)
-               (setf processes (delete entry processes))
-               (decf count)
+               (remhash (process-thread process) processes)
                (funcall (process-cleanup entry) (process-data entry) (thread-result entry)))))
-      (unless (funcall queue-empty-p)
-        (setf elem (funcall queue-popper))
+      (unless (empty-p queue)
+        (setf elem (dequeue queue))
         (cond
           ((funcall background-p elem)
-           (incf count)
-           (when (> count *max-actual-forks*)
-             (setf *max-actual-forks* count))
-           (push (make-communicating-thread pending elem thunk cleanup) processes))
+           (when (> (hash-table-count processes) *max-actual-forks*)
+             (setf *max-actual-forks* (hash-table-count processes)))
+           (let ((thread (make-communicating-thread pending elem thunk cleanup)))
+             (setf (gethash thread processes) thread)))
           (t
            (unwind-protect (funcall thunk elem)
              (funcall cleanup elem *default-process-result*))))))
-    (assert (and (funcall queue-empty-p) (null processes)) ()
+    (assert (and (empty-p queue) (empty-p processes)) ()
             "List of processes or list of things to do isn't empty: (~S...)/~S~%"
-            (funcall queue-popper)
-            processes))
+            (queue-contents queue)
+            (table-values processes))
   nil)
 |#
 
@@ -856,7 +860,7 @@ Operation-executed-p is at plan execution time.")
 
 (defmethod perform-with-restarts ((operation parallelizable-operation) (module module))
   (multiple-value-bind (action-queue ind dir) (make-checked-dependency-trees operation module)
-    (unless (queue-empty-p action-queue)
+    (unless (empty-p action-queue)
       (let ((n (hash-table-count dir))
             (all-compilation-unit-reports nil))
         (dolist/forking
@@ -899,7 +903,7 @@ Operation-executed-p is at plan execution time.")
                       necessary-p)
               (perform-with-restarts (ensure-operation operation) component))))
         (mapc #'reconstitute-deferred-warnings all-compilation-unit-reports)))
-    (assert (zerop (hash-table-count dir))
+    (assert (empty-p dir)
             (dir ind)
             "Direct dependency table is not empty - there is a problem ~
                with the dependency trees:~%~S" (summarize-direct-deps dir))))
@@ -922,13 +926,12 @@ Operation-executed-p is at plan execution time.")
 	 warnings-p failure-p output-truename)
     (unwind-protect (progn
                       (multiple-value-setq (output-truename warnings-p failure-p)
-			(with-compilation-unit (:override t)
-			  (call-with-around-compile-hook
-			   c #'(lambda (&rest flags)
-				 (apply *compile-op-compile-file-function* source-file
-					:output-file output-file
-					:external-format (component-external-format c)
-					(append flags (compile-op-flags op)))))))
+                        (call-with-around-compile-hook
+                         c #'(lambda (&rest flags)
+                               (apply *compile-op-compile-file-function* source-file
+                                      :output-file output-file
+                                      :external-format (component-external-format c)
+                                      (append flags (compile-op-flags op))))))
                       (setf compile-status
                             (list :input-file source-file
                                   :performed-p t
