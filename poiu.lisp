@@ -2,7 +2,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.025")
+(defparameter *poiu-version* "1.026")
 (defparameter *asdf-version-required-by-poiu* "2.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -106,6 +106,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric table-values (table))
 (defmethod table-values ((table hash-table))
   (loop :for val :being :the :hash-values :of table :collect val))
+(defgeneric table-keys (table))
+(defmethod table-keys ((table hash-table))
+  (loop :for key :being :the :hash-keys :of table :collect key))
 
 (defgeneric empty-p (collection))
 (defmethod empty-p ((table hash-table))
@@ -183,13 +186,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     ;; For *undefined-warnings*, the adjustment is a list of initargs.
     ;; For everything else, it's an integer.
     (destructuring-bind (symbol . adjustment) item
-      (ecase symbol
-        (sb-c::*undefined-warnings*
+      (case symbol
+        ((sb-c::*undefined-warnings*)
          (setf sb-c::*undefined-warnings*
                (nconc (mapcan
                        #'(lambda (stuff)
                            (destructuring-bind (kind rname count . rest) stuff
-                             (let ((name (reconstitute-symbol rname)))
+                             (let ((name (reconstitute-simple-sexp rname)))
                                (if (and (eq kind :function) (fboundp name))
                                    nil
                                    (list
@@ -203,18 +206,31 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                                              rest)))))))
                        adjustment)
                       sb-c::*undefined-warnings*)))
-        (t
+        (otherwise
          (set symbol (+ (symbol-value symbol) adjustment)))))))
 
+(defun cl-symbol-p (x)
+  (and (symbolp x) (eq (find-package :cl) (symbol-package x))))
+(deftype cl-symbol () '(and symbol (satisfies cl-symbol-p)))
 (defun reify-symbol (sym)
   (vector (symbol-name sym) (package-name (symbol-package sym))))
 (defun reconstitute-symbol (sym)
   (intern (aref sym 0) (aref sym 1)))
+(defun reify-simple-sexp (sexp)
+  (etypecase sexp
+    ((or cl-symbol keyword number character simple-string) sexp)
+    (cons (cons (reify-simple-sexp (car sexp)) (reify-simple-sexp (cdr sexp))))
+    (symbol (reify-symbol sexp))))
+(defun reconstitute-simple-sexp (sexp)
+  (etypecase sexp
+    ((or cl-symbol keyword number character simple-string) sexp)
+    (cons (cons (reconstitute-simple-sexp (car sexp)) (reconstitute-simple-sexp (cdr sexp))))
+    ((simple-vector 2) (reconstitute-symbol sexp))))
 
 (defun reify-undefined-warnings (warning)
   #+sbcl
   (list* (sb-c::undefined-warning-kind warning)
-         (reify-symbol (sb-c::undefined-warning-name warning))
+         (reify-simple-sexp (sb-c::undefined-warning-name warning))
          (sb-c::undefined-warning-count warning)
          (mapcar
           #'(lambda (frob)
@@ -820,25 +836,17 @@ Operation-executed-p is at plan execution time.")
   nil)
 |#
 
-(defmacro dolist/forking ((var queue
-                           &key
-                             (result (gensym "RESULT"))
-                             (background-p t) (announce nil) (cleanup nil))
-                          &body body)
+(defmacro doqueue/forking ((var queue
+                            &key
+                              (result (gensym "RESULT"))
+                              (background-p t) (announce nil) (cleanup nil))
+                           &body body)
   `(call-queue/forking
-    #'(lambda (,var)
-        (declare (ignorable ,var))
-        ,@body)
+    #'(lambda (,var) (declare (ignorable ,var)) ,@body)
     ,queue
-    :cleanup #'(lambda (,var ,result)
-                  (declare (ignorable ,var ,result))
-                  ,cleanup)
-    :announce #'(lambda (,var)
-                  (declare (ignorable ,var))
-                  ,announce)
-    :background-p #'(lambda (,var)
-                      (declare (ignorable ,var))
-                      ,background-p)))
+    :cleanup #'(lambda (,var ,result) (declare (ignorable ,var ,result)) ,cleanup)
+    :announce #'(lambda (,var) (declare (ignorable ,var)) ,announce)
+    :background-p #'(lambda (,var) (declare (ignorable ,var)) ,background-p)))
 
 (defmethod perform :after ((operation parallel-compile-op) c)
   (mark-operation-done (make-instance 'compile-op) c))
@@ -858,12 +866,18 @@ Operation-executed-p is at plan execution time.")
                ,@(component-module-path c)))
     (force-output *breadcrumb-stream*)))
 
+(defun file-compile-action-p (action)
+  (destructuring-bind (op comp) action
+    (format t "ACTION: ~S ~S~%" op comp)
+    (and (typep (ensure-operation op) 'parallel-compile-op) (typep comp 'source-file))))
+
 (defmethod perform-with-restarts ((operation parallelizable-operation) (module module))
   (multiple-value-bind (action-queue ind dir) (make-checked-dependency-trees operation module)
     (unless (empty-p action-queue)
-      (let ((n (hash-table-count dir))
-            (all-compilation-unit-reports nil))
-        (dolist/forking
+      (let ((all-compilation-unit-reports nil)
+            (system-name (coerce-name (component-system module)))
+            (n (length (remove-if-not 'file-compile-action-p (table-keys dir)))))
+        (doqueue/forking
             (action action-queue
              :result result
              :background-p
@@ -874,11 +888,11 @@ Operation-executed-p is at plan execution time.")
                                     failure-p performed-p &allow-other-keys)
                  result
                (when input-file
-                 (decf n)
-                 (format t "~@[[~4d to go] ~]Done compiling ~A~%"
+                 (format t "~@[[~4d to go in ~A] ~]Done compiling ~A~%"
                          ;; Don't show negatives. (It's good enough for me)
                          ;; I really don't care that or why I'm counting wrong.
-                         n input-file)
+                          n system-name input-file)
+                 (decf n)
                  (finish-outputs))
                (when compilation-unit-report
                  (push compilation-unit-report all-compilation-unit-reports))
@@ -920,7 +934,6 @@ Operation-executed-p is at plan execution time.")
 			  :input-file source-file
 			  :performed-p t
 			  :output-truename output-file
-                          :compilation-unit-report (get-compilation-unit-report)
 			  :warnings-p nil
 			  :failure-p t))
 	 warnings-p failure-p output-truename)
@@ -936,6 +949,7 @@ Operation-executed-p is at plan execution time.")
                             (list :input-file source-file
                                   :performed-p t
                                   :output-truename output-truename
+                                  :compilation-unit-report (get-compilation-unit-report)
                                   :warnings-p warnings-p
                                   :failure-p failure-p)))
       (finish-outputs)
