@@ -2,7 +2,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.026")
+(defparameter *poiu-version* "1.027")
 (defparameter *asdf-version-required-by-poiu* "2.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -97,7 +97,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
   #+clisp (require "linux")
   #+sbcl (require :sb-posix)
-  (export '(parallel-load-op parallel-compile-op operation-necessary-p
+  (export '(parallel-load-op parallel-compile-op
             parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
 
@@ -191,19 +191,19 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
          (setf sb-c::*undefined-warnings*
                (nconc (mapcan
                        #'(lambda (stuff)
-                           (destructuring-bind (kind rname count . rest) stuff
-                             (let ((name (reconstitute-simple-sexp rname)))
-                               (if (and (eq kind :function) (fboundp name))
-                                   nil
-                                   (list
-                                    (sb-c::make-undefined-warning
-                                     :name name
-                                     :kind kind
-                                     :count count
-                                     :warnings
-                                     (mapcar #'(lambda (x)
-                                                 (apply #'sb-c::make-compiler-error-context x))
-                                             rest)))))))
+                           (destructuring-bind (kind name count . rest)
+                               (reconstitute-simple-sexp stuff)
+                             (if (and (eq kind :function) (fboundp name))
+                                 nil
+                                 (list
+                                  (sb-c::make-undefined-warning
+                                   :name name
+                                   :kind kind
+                                   :count count
+                                   :warnings
+                                   (mapcar #'(lambda (x)
+                                               (apply #'sb-c::make-compiler-error-context x))
+                                           rest))))))
                        adjustment)
                       sb-c::*undefined-warnings*)))
         (otherwise
@@ -218,31 +218,32 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (intern (aref sym 0) (aref sym 1)))
 (defun reify-simple-sexp (sexp)
   (etypecase sexp
-    ((or cl-symbol keyword number character simple-string) sexp)
+    ((or cl-symbol keyword number character simple-string pathname) sexp)
     (cons (cons (reify-simple-sexp (car sexp)) (reify-simple-sexp (cdr sexp))))
     (symbol (reify-symbol sexp))))
 (defun reconstitute-simple-sexp (sexp)
   (etypecase sexp
-    ((or cl-symbol keyword number character simple-string) sexp)
+    ((or cl-symbol keyword number character simple-string pathname) sexp)
     (cons (cons (reconstitute-simple-sexp (car sexp)) (reconstitute-simple-sexp (cdr sexp))))
     ((simple-vector 2) (reconstitute-symbol sexp))))
 
 (defun reify-undefined-warnings (warning)
   #+sbcl
-  (list* (sb-c::undefined-warning-kind warning)
-         (reify-simple-sexp (sb-c::undefined-warning-name warning))
-         (sb-c::undefined-warning-count warning)
-         (mapcar
-          #'(lambda (frob)
-              ;; the lexenv slot can be ignored for reporting purposes
-              `(:enclosing-source ,(sb-c::compiler-error-context-enclosing-source frob)
-                :source ,(sb-c::compiler-error-context-source frob)
-                :original-source ,(sb-c::compiler-error-context-original-source frob)
-                :context ,(sb-c::compiler-error-context-context frob)
-                :file-name ,(sb-c::compiler-error-context-file-name frob) ; a pathname
-                :file-position ,(sb-c::compiler-error-context-file-position frob) ; an integer
-                :original-source-path ,(sb-c::compiler-error-context-original-source-path frob)))
-          (sb-c::undefined-warning-warnings warning))))
+  (reify-simple-sexp
+   (list* (sb-c::undefined-warning-kind warning)
+          (sb-c::undefined-warning-name warning)
+          (sb-c::undefined-warning-count warning)
+          (mapcar
+           #'(lambda (frob)
+               ;; the lexenv slot can be ignored for reporting purposes
+               `(:enclosing-source ,(sb-c::compiler-error-context-enclosing-source frob)
+                 :source ,(sb-c::compiler-error-context-source frob)
+                 :original-source ,(sb-c::compiler-error-context-original-source frob)
+                 :context ,(sb-c::compiler-error-context-context frob)
+                 :file-name ,(sb-c::compiler-error-context-file-name frob) ; a pathname
+                 :file-position ,(sb-c::compiler-error-context-file-position frob) ; an integer
+                 :original-source-path ,(sb-c::compiler-error-context-original-source-path frob)))
+           (sb-c::undefined-warning-warnings warning)))))
 
 (defun get-compilation-unit-report ()
   #-sbcl nil
@@ -292,22 +293,16 @@ debug them later.")
     (run-in-background-p (make-instance operation) component :force force))
   (:method ((operation parallelizable-operation) component &key force)
     (and (can-run-in-background-p operation)
-         (or (not (operation-executed-p operation component))
-             force))))
+         (or force
+             (not (operation-executed-p operation component))))))
 
 (defgeneric dependee-operations-necessary-p (operation component)
+  (:method ((op symbol) component)
+    (dependee-operations-necessary-p (make-instance op) component))
   (:method ((op compile-op) component)
     (declare (ignorable op component))
     t)
-  (:method (op component)
-    (declare (ignorable op component))
-    nil))
-
-(defgeneric operation-necessary-p (operation component)
-  (:method ((op compile-op) component)
-    (declare (ignorable op component))
-    t)
-  (:method (op component)
+  (:method ((op operation) component)
     (declare (ignorable op component))
     nil))
 
@@ -326,11 +321,11 @@ Operation-executed-p is at plan execution time.")
   (:method ((operation symbol) component)
     (operation-executed-p (make-instance operation) component)))
 
-(defun parallelize-deed (deed)
-  (case (car deed)
-    (compile-op (cons 'parallel-compile-op (cdr deed)))
-    (load-op (cons 'parallel-load-op (cdr deed)))
-    (otherwise deed)))
+(defun parallelize-action (action)
+  (case (car action)
+    (compile-op (cons 'parallel-compile-op (cdr action)))
+    (load-op (cons 'parallel-load-op (cdr action)))
+    (otherwise action)))
 
 ;; ASDF somehow maintains a dubious distinction between internal dependencies
 ;; that trigger a recompilation and external dependencies that don't.
@@ -338,7 +333,7 @@ Operation-executed-p is at plan execution time.")
 ;; from serial dependencies.
 (macrolet ((def-depend-method (class base-class)
              `(defmethod component-depends-on ((operation ,class) c)
-                (mapcar #'parallelize-deed
+                (mapcar #'parallelize-action
                         (append
                          (cdr (assoc ',base-class (component-do-first c)))
                          (call-next-method))))))
@@ -347,12 +342,12 @@ Operation-executed-p is at plan execution time.")
 
 (defun component-equal (c1 c2)
   (or (and (null c1) (null c2))
-      (and (equal (component-name c1) (component-name c2))
+      (and c1 c2 (equal (component-name c1) (component-name c2))
            (component-equal (component-parent c1) (component-parent c2)))))
 
-(defun deed-equal (deed1 deed2)
-  (and (eql (car deed1) (car deed2))
-       (component-equal (second deed1) (second deed2))))
+(defun action-equal (action1 action2)
+  (and (eql (car action1) (car action2))
+       (component-equal (second action1) (second action2))))
 
 (defun ensure-component (parent coid)
   (etypecase coid
@@ -867,8 +862,8 @@ Operation-executed-p is at plan execution time.")
     (force-output *breadcrumb-stream*)))
 
 (defun file-compile-action-p (action)
-  (destructuring-bind (op comp) action
-    (format t "ACTION: ~S ~S~%" op comp)
+  (destructuring-bind (op comp &optional necessary-p) action
+    (declare (ignore necessary-p))
     (and (typep (ensure-operation op) 'parallel-compile-op) (typep comp 'source-file))))
 
 (defmethod perform-with-restarts ((operation parallelizable-operation) (module module))
@@ -888,12 +883,13 @@ Operation-executed-p is at plan execution time.")
                                     failure-p performed-p &allow-other-keys)
                  result
                (when input-file
-                 (format t "~@[[~4d to go in ~A] ~]Done compiling ~A~%"
+                 (format t "~&~@[[~4d to go in ~A] ~]Done compiling ~A~%"
                          ;; Don't show negatives. (It's good enough for me)
                          ;; I really don't care that or why I'm counting wrong.
-                          n system-name input-file)
-                 (decf n)
+                         n system-name input-file)
                  (finish-outputs))
+               (when (file-compile-action-p action)
+                 (decf n))
                (when compilation-unit-report
                  (push compilation-unit-report all-compilation-unit-reports))
                (destructuring-bind (operation component &optional necessary-p) action
@@ -904,17 +900,16 @@ Operation-executed-p is at plan execution time.")
                    (perform-with-restarts (ensure-operation operation) component))
                  (loop :for (opened-op opened-comp) :in (mark-as-done operation component ind dir)
                        :for opened-necessary-p
-                         = (and (or necessary-p
-                                    (and performed-p
-                                         (dependee-operations-necessary-p operation component)))
-                                (operation-necessary-p opened-op opened-comp))
+                         = (or necessary-p
+                               (and performed-p
+                                    (dependee-operations-necessary-p operation component)))
                        :for opened-action = (list opened-op opened-comp opened-necessary-p)
                        :do (if (can-run-in-background-p opened-op)
                                (enqueue-in-front action-queue opened-action)
                                (enqueue action-queue opened-action))))))
           (destructuring-bind (operation component &optional necessary-p) action
-            (when (or (not (operation-executed-p operation component))
-                      necessary-p)
+            (when (or necessary-p
+                      (not (operation-executed-p operation component)))
               (perform-with-restarts (ensure-operation operation) component))))
         (mapc #'reconstitute-deferred-warnings all-compilation-unit-reports)))
     (assert (empty-p dir)
