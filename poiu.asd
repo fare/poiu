@@ -13,7 +13,7 @@
 
 (let ((old-ver (asdf-version)))
   (load-system :asdf)
-  (let ((min "2.21")
+  (let ((min "2.26.14")
 	(ver (asdf-version)))
     (unless (or (version-satisfies old-ver "2.014.8") ; first version to do magic upgrade
 		(equal ver old-ver))
@@ -32,5 +32,5 @@ POIU is a variant of ASDF that may operate on your systems in parallel.
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
-    :depends-on ((:version :asdf "2.21")) ; for external-format support.
+    :depends-on ((:version :asdf "2.26.14")) ; for new operation-done-p
     :components ((:file "poiu")))

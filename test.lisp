@@ -10,21 +10,16 @@
 
 (in-package :cl-user)
 
-(setf *load-verbose* t
-      *load-print* t
-      *compile-verbose* t
-      *compile-print* t)
+(setf *load-verbose* nil
+      *load-print* nil
+      *compile-verbose* nil
+      *compile-print* nil)
 
 (require "asdf")
 
-(setf *load-verbose* t
-      *load-print* t
-      *compile-verbose* t
-      *compile-print* t)
-
 (in-package :asdf)
 
-(defmacro dbg (tag &rest exprs)
+(defmacro DBG (tag &rest exprs)
   "simple debug statement macro:
 outputs a tag plus a list of source expressions and their resulting values, returns the last values"
   (let ((res (gensym))(f (gensym)))
@@ -38,12 +33,16 @@ outputs a tag plus a list of source expressions and their resulting values, retu
          exprs)
       (apply 'values ,res)))))
 
+(load-system :asdf)
+
 (load-system :poiu :verbose t)
 
 (setf *load-verbose* t
       *load-print* t
       *compile-verbose* t
-      *compile-print* t)
+      *compile-print* t
+      *asdf-verbose* t)
+
 
 (format *error-output* "~&POIU ~A~%" *poiu-version*)
 
@@ -56,14 +55,20 @@ outputs a tag plus a list of source expressions and their resulting values, retu
   #+sbcl
   (sb-debug:backtrace most-positive-fixnum out))
 
-#+(or)
-(trace operate traverse make-checked-dependency-trees
-       run-in-background-p
-       can-run-in-background-p operation-executed-p operation-done-p
-       input-files output-files file-write-date
-       component-operation-time mark-operation-done
-       call-queue/forking make-communicating-subprocess
-       perform perform-with-restarts perform-plan compile-file)
+;;#+(or)
+(trace
+ ;; traverse traverse-component
+ ;; make-checked-dependency-trees
+ ;; run-in-background-p
+ ;; mark-as-done
+ ;; process-return process-result ;; action-result-file
+ ;; input-files output-files file-write-date
+ ;; component-operation-time mark-operation-done
+ ;; call-queue/forking make-communicating-subprocess
+ ;; perform perform-with-restarts
+ ;; compile-file load
+ operate call-recording-breadcrumbs perform-plan
+)
 ;;#+clisp (trace posix-wexitstatus posix-wait)
 
 (defvar *fare* (asdf::user-homedir))
@@ -77,7 +82,14 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (format t "~&ERROR:~%~A~%" condition)
                             (finish-output)
                             (return))))
-    (asdf:parallel-load-system :exscribe :verbose t :force t)
+    (asdf:parallel-load-system
+     :iterate :verbose t
+     ;;:force :all
+     :breadcrumbs-to "/tmp/breadcrumbs.text")
+    (asdf:parallel-load-system
+     :exscribe :verbose t
+     ;;:force :all
+     :breadcrumbs-to "/tmp/breadcrumbs.text")
     (funcall (find-symbol "PROCESS-COMMAND-LINE" "EXSCRIBE")
              `("-I" ,(subnamestring *fare* "fare/www/")
                "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
