@@ -777,7 +777,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defmethod perform-plan ((plan parallel-plan) &key)
   (with-slots ((action-queue starting-points) children parents ancestor background-actions) plan
-    (DBG :pp (summarize-plan plan))
+    ;;(DBG :pp (summarize-plan plan))
     (let ((all-compilation-unit-reports nil)
           (ltogo (unless (zerop background-actions) (ceiling (log background-actions 10))))
           (*package* *package*)
