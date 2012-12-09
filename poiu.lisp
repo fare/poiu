@@ -2,7 +2,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29")
+(defparameter *poiu-version* "1.29.1")
 (defparameter *asdf-version-required-by-poiu* "2.26.14"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -612,7 +612,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              (let ((*package* (find-package :cl))
                    (*read-eval* nil)
                    (*print-readably* nil))
-               (reconstitute-sexp (read s))))))
+               (reconstitute-simple-sexp (read s))))))
       (when condition
         (return (values nil (make-condition 'process-failed :condition "Could not read result file"))))
       (unless (and (consp form) (eq (car form) :process-done))
@@ -890,8 +890,11 @@ debug them later.")
 (defun call-recording-breadcrumbs (pathname record-p thunk)
   (if record-p
       (let ((*breadcrumb-stream*
-              (open pathname :direction :output
-                             :if-exists :supersede :if-does-not-exist :create)))
+              (progn
+                (delete-file-if-exists pathname)
+                (open pathname :direction :output
+                               :if-exists :overwrite
+                               :if-does-not-exist :create))))
         (format *breadcrumb-stream* ";; Breadcrumbs~%")
         (unwind-protect
              (funcall thunk)
