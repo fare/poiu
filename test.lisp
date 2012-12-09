@@ -19,6 +19,7 @@
 
 (in-package :asdf)
 
+(pushnew :DBG *features*)
 (defmacro DBG (tag &rest exprs)
   "simple debug statement macro:
 outputs a tag plus a list of source expressions and their resulting values, returns the last values"
@@ -57,8 +58,8 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 
 ;;#+(or)
 (trace
- ;; traverse traverse-component
- ;; make-checked-dependency-trees
+ traverse ;; traverse-component
+ make-parallel-plan
  ;; run-in-background-p
  ;; mark-as-done
  ;; process-return process-result ;; action-result-file
@@ -82,10 +83,6 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (format t "~&ERROR:~%~A~%" condition)
                             (finish-output)
                             (return))))
-    (asdf:parallel-load-system
-     :iterate :verbose t
-     ;;:force :all
-     :breadcrumbs-to "/tmp/breadcrumbs.text")
     (asdf:parallel-load-system
      :exscribe :verbose t
      ;;:force :all

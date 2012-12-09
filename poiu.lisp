@@ -2,7 +2,7 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.28")
+(defparameter *poiu-version* "1.29")
 (defparameter *asdf-version-required-by-poiu* "2.26.14"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -280,7 +280,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
    (children :initform (make-hash-table :test #'equal)) ;; map an action to a (hash)set of "children" that it depends on
    (parents :initform (make-hash-table :test #'equal)) ;; map an action to a (hash)set of "parents" that depend on it
    (background-actions :initform 0 :accessor plan-background-actions)
+   (visited-nodes :initform (make-hash-table :test #'equal))
+   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0))
    (ancestor :initarg :ancestor)))
+
+(defmethod print-object ((plan parallel-plan) stream)
+  (print-unreadable-object (plan stream :type t :identity t)
+    (pprint (summarize-plan plan) stream)))
 
 (defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
   (with-slots (starting-points children) plan
@@ -288,11 +294,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
       (remove component (append (queue-contents starting-points) (table-keys children)) :key 'cdr :test-not 'eq))))
 
 (defun record-dependency (parent child parents children)
+  (unless (gethash child parents)
+    (setf (gethash child parents) (make-hash-table :test #'equal)))
   (when parent
     (unless (gethash parent children)
       (setf (gethash parent children) (make-hash-table :test #'equal)))
-    (unless (gethash child parents)
-      (setf (gethash child parents) (make-hash-table :test #'equal)))
     (setf (gethash child (gethash parent children)) t)
     (setf (gethash parent (gethash child parents)) t)))
 
@@ -301,48 +307,64 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   ;; returns a list of new actions that are enabled by it being done.
   (check-type operation operation)
   (let* ((action (node-for operation component))
-         (action-parents (aif (gethash action parents) (table-keys it))))
+         (action-parents (aif (gethash action parents) (table-keys it)))
+         (action-children (aif (gethash action children) (table-keys it))))
     (remhash action parents)
-    (loop :for parent :in action-parents
-      :for siblings = (gethash parent children)
-      :do (assert siblings)
-          (remhash action siblings)
-      :when (empty-p siblings)
-        :do (remhash parent children)
-        :and :collect parent)))
+    (assert (null action-children))
+    (remhash action children)
+    (values
+     (loop :for parent :in action-parents
+           :for siblings = (gethash parent children)
+           :do (assert siblings)
+               (remhash action siblings)
+           :when (empty-p siblings)
+             :do (remhash parent children)
+             :and :collect parent)
+     (loop :for child :in action-children
+           :for siblings = (gethash child parents)
+           :do (assert siblings)
+               (remhash action siblings)
+           :when (empty-p siblings)
+             :do (remhash child parents)
+             :and :collect child))))
 
-(defun make-parallel-plan (operation component)
+(defmethod action-visited-stamp ((plan parallel-plan) (o operation) (c component))
+  (car (gethash (node-for o c) (slot-value plan 'visited-nodes))))
+
+(defun make-parallel-plan (operation component &key)
   (let ((plan (make-instance 'parallel-plan :ancestor operation)))
-    (with-slots (starting-points children parents ancestor background-actions) plan
+    (with-slots (starting-points children parents ancestor
+                 background-actions visited-nodes all-actions) plan
       (labels
           ((visit (o c stamp parent)
-             (let ((action (node-for o c)))
-               (record-dependency parent action parents children)
-               (multiple-value-bind (s p) (component-visited-p o c)
+             (let ((node (node-for o c))
+                   (action (cons o c)))
+               (record-dependency parent node parents children)
+               (vector-push-extend action all-actions)
+               (multiple-value-bind (s p) (gethash node visited-nodes)
                  (if p
                      (car s)
                      (with-component-being-visited (o c)
                        (visit-action
-                        o c
+                        o c stamp plan
                         #'(lambda (stamp)
-                            #'(lambda (o c) (visit o c stamp action)))
+                            #'(lambda (o c) (visit o c stamp node)))
                         #'(lambda (o c done-p stamp)
-                            (mark-component-visited
-                             o c (cons stamp
-                                       (when (and (not done-p)
-                                                  (run-in-background-p o c))
-                                         (incf background-actions))))
-                            (cond
-                              (done-p (mark-operation-done o c)
-                                      (mark-as-done o c parents children))
-                              ((not (gethash action children))
-                               (enqueue starting-points (cons o c)))))
-                        stamp)))))))
+                            ;;(record-dependency parent (node-for o c) parents children)
+                            (setf (gethash node visited-nodes)
+                                  (list stamp ;; NB: used above
+                                        done-p ;; NB: used by action-already-done-p below
+                                        (when (and (not done-p) ;; count for users
+                                                   (run-in-background-p o c))
+                                          (incf background-actions))))
+                            (when done-p (mark-operation-done o c))
+                            (unless (gethash node children)
+                              (enqueue starting-points action))))))))))
         (visit operation component nil nil)
         plan))))
 
 (defun summarize-plan (plan)
-  (with-slots (starting-points children) plan
+  (with-slots (starting-points children ancestor) plan
     `((:starting-points
        ,(loop :for (o . c) :in (queue-contents starting-points)
               :collect (cons (type-of o) (component-find-path c))))
@@ -353,7 +375,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
           (sort
            (loop :for parent :being :the :hash-keys :in children
                  :using (:hash-value progeny)
-                 :collect `(,(sexpify parent) :-
+                 :collect `(,(sexpify parent)
+                            ,(destructuring-bind (o . c) (node-action ancestor parent)
+                               (if (action-already-done-p plan o c) :- :+))
                             ,@(loop :for child :being :the :hash-keys :in progeny
                                     :using (:hash-value v)
                                     :when v :collect (sexpify child))))
@@ -361,28 +385,30 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defgeneric check-invariants (object))
 
-(defun node-action (node)
+(defun node-action (op node)
   (destructuring-bind (opname . comp) node
-    (cons (make-instance opname) comp)))
+    (cons (make-sub-operation op opname) comp)))
 
 (defmethod check-invariants ((plan parallel-plan))
   ;; This destructively checks that the dependency tree model is coherent.
-  (with-slots (starting-points parents children ancestor) plan
-    (with-queue (action action-queue starting-points)
-      (destructuring-bind (operation . component) action
-        (enqueue-many action-queue
-                      (mapcar 'node-action (mark-as-done operation component parents children)))))
-    (unless (empty-p children)
-      (error "Cycle detected in the dependency graph:~%~S"
-             (summarize-plan plan))))
-  t)
+  (while-collecting (collect)
+    (with-slots (starting-points parents children ancestor) plan
+      (with-queue (action action-queue starting-points)
+        (collect action)
+        (destructuring-bind (operation . component) action
+          (enqueue-many action-queue
+                        (loop :for node :in (mark-as-done operation component parents children)
+                              :collect (node-action ancestor node)))))
+      (unless (empty-p children)
+        (error "Cycle detected in the dependency graph:~%~S"
+               plan)))))
 
 (defun make-checked-parallel-plan (operation module)
-  (check-invariants (make-parallel-plan operation module)) ;; do it once, destructively check the results
+  (check-invariants (make-parallel-plan operation module)) ;; do it once, destructively check it
   (make-parallel-plan operation module)) ;; do it again.
 
 (defmethod traverse ((operation parallelizable-operation) system)
-  (make-parallel-plan (unparallelize-operation operation) system))
+  (make-checked-parallel-plan (unparallelize-operation operation) system))
 
 (defparameter *max-forks* 16)
 (defparameter *max-actual-forks* nil)
@@ -561,7 +587,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defun process-return (result-file result condition)
   (with-open-file (s result-file
-                     :direction :output :if-exists :rename-and-delete :if-does-not-exist :create)
+                     :direction :output :if-exists :supersede :if-does-not-exist :create)
     (with-standard-io-syntax
       (let ((*package* (find-package :cl))
             (*read-eval* nil)
@@ -586,7 +612,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              (let ((*package* (find-package :cl))
                    (*read-eval* nil)
                    (*print-readably* nil))
-               (read s)))))
+               (reconstitute-sexp (read s))))))
       (when condition
         (return (values nil (make-condition 'process-failed :condition "Could not read result file"))))
       (unless (and (consp form) (eq (car form) :process-done))
@@ -609,9 +635,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            (funcall (intern "STOP-PROFILING" :sb-sprof))))
        #+clozure (setf ccl::*batch-flag* t)
        (reset-deferred-warnings)
-       (multiple-value-bind (result condition)
-           (ignore-errors (values (funcall function data t)))
-         (process-return result-file result condition)
+       (unwind-protect
+            (multiple-value-bind (result condition)
+                (ignore-errors (values (funcall function data t)))
+              (process-return result-file result condition))
          (finish-outputs)
          (posix-exit 0)))
       (t ; in the parent
@@ -625,51 +652,51 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 			   &key announce cleanup result-file (background-p (constantly t)))
   ;; assumes a single-threaded parent process
   (declare (optimize debug))
-  (loop :with processes = (make-hash-table :test 'equal) :do
-    (cond
-      (;; nothing to do or wait for anymore.
-       (and (empty-p queue) (empty-p processes))
-       (return))
-      (;; we've exceeded the subprocess limit. Wait for a few before continuing.
-       (or (>= (hash-table-count processes) *max-forks*)
-           (empty-p queue))
-       (disable-other-waiters)
-       (multiple-value-bind (pid status)
-           (timed-do (*time-spent-waiting*) (posix-wait))
-         (flet ((cleanup (process status)
-                  (multiple-value-bind (result condition)
-                      (process-result process status)
-                    (funcall (process-cleanup process) (process-data process) result condition t))))
-           (if pid
-               (let ((process (gethash pid processes)))
-                 (assert process () "couln't find the pid ~A in processes ~S" pid (table-values processes))
-                 (remhash pid processes)
-                 (cleanup process status))
-               ;; clisp can currently drop signals and get a ENOCHILD...
-               (let ((missed (table-values processes)))
-                 (warn "No child left: we must have dropped a signal!")
+  (let ((processes (make-hash-table :test 'equal)))
+    (loop
+      (cond
+        (;; nothing to do or wait for anymore.
+         (and (empty-p queue) (empty-p processes))
+         (return))
+        (;; we've exceeded the subprocess limit. Wait for a few before continuing.
+         (or (>= (hash-table-count processes) *max-forks*)
+             (empty-p queue))
+         (disable-other-waiters)
+         (multiple-value-bind (pid status)
+             (timed-do (*time-spent-waiting*) (posix-wait))
+           (flet ((cleanup (process status)
+                    (multiple-value-bind (result condition)
+                        (process-result process status)
+                      (funcall (process-cleanup process) (process-data process) result condition t))))
+             (if pid
+                 (let ((process (gethash pid processes)))
+                   (assert process () "couln't find the pid ~A in processes ~S" pid (table-values processes))
+                   (remhash pid processes)
+                   (cleanup process status))
+                 ;; clisp can currently drop signals and get a ENOCHILD...
+                 (let ((missed (table-values processes)))
+                   (warn "No child left: we must have dropped a signal!")
                        ;;;(warn "blah ~S" entries) ;XXX
-                 (clrhash processes)
-                 (dolist (process missed)
-                   (cleanup process nil)))))))
-      (t ;; dequeue an item
-       (let* ((item (dequeue queue))
-              (backgroundp (funcall background-p item)))
-         (funcall announce item backgroundp)
-         (cond
-           (backgroundp
-            (latest-stamp-f *max-actual-forks* (hash-table-count processes))
-            (let ((process (make-background-process item fun cleanup (funcall result-file item))))
-              (setf (gethash (process-pid process) processes) process)))
-           (t
-            (multiple-value-bind (result condition)
-                (ignore-errors (values (funcall fun item nil)))
-              (funcall cleanup item result condition nil))))))
-      :finally
-      (assert (and (empty-p queue) (empty-p processes)) ()
-              "List of processes or list of things to do isn't empty: ~S / ~S~%"
-              (queue-contents queue)
-              (table-values processes)))))
+                   (clrhash processes)
+                   (dolist (process missed)
+                     (cleanup process nil)))))))
+        (t ;; dequeue an item
+         (let* ((item (dequeue queue))
+                (backgroundp (funcall background-p item)))
+           (funcall announce item backgroundp)
+           (cond
+             (backgroundp
+              (latest-stamp-f *max-actual-forks* (hash-table-count processes))
+              (let ((process (make-background-process item fun cleanup (funcall result-file item))))
+                (setf (gethash (process-pid process) processes) process)))
+             (t
+              (multiple-value-bind (result condition)
+                  (ignore-errors (values (funcall fun item nil)))
+                (funcall cleanup item result condition nil))))))))
+    (assert (and (empty-p queue) (empty-p processes)) ()
+            "List of processes or list of things to do isn't empty: ~S / ~S~%"
+            (queue-contents queue)
+            (table-values processes))))
 
 (defmacro doqueue/forking ((queue &key variables
                                     (background-p t) (announce nil) (cleanup nil) result-file)
@@ -775,10 +802,12 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
      (make-pathname :name (format nil "~A.ASDF-~A" (file-namestring p) (type-of o))
                     :type "process-result" :defaults p))))
 
+(defmethod action-already-done-p ((plan parallel-plan) (o operation) (c component))
+  (second (gethash (node-for o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
+
 (defmethod perform-plan ((plan parallel-plan) &key)
   (with-slots ((action-queue starting-points) children parents ancestor background-actions) plan
-    ;;(DBG :pp (summarize-plan plan))
-    (let ((all-compilation-unit-reports nil)
+    (let ((all-deferred-warnings nil)
           (ltogo (unless (zerop background-actions) (ceiling (log background-actions 10))))
           (*package* *package*)
           (*readtable* *readtable*))
@@ -786,10 +815,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (doqueue/forking
             (action-queue ;; variable for each action, queue object
              :variables (:item action :backgroundp backgroundp :result result :condition condition)
-             :background-p (destructuring-bind (o . c) action (run-in-background-p o c))
+             :background-p (destructuring-bind (o . c) action
+                             (and (run-in-background-p o c)
+                                  (not (action-already-done-p plan o c))))
              :announce
-             (format t "~&Will try ~A in ~:[foreground~;background~]~%"
-                     (destructuring-bind (o . c) action (operation-description o c)) backgroundp)
+             (destructuring-bind (o . c) action
+               (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
+                       (action-already-done-p plan o c) (operation-description o c) backgroundp))
              :result-file
              (destructuring-bind (o . c) action (action-result-file o c))
              ;; How we cleanup in the foreground after an action is run
@@ -804,9 +836,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                   (perform-with-restarts o c))
                  (t
                   (mark-operation-done o c)
-                  (destructuring-bind (&key compilation-unit-report &allow-other-keys) result
-                    (when compilation-unit-report
-                      (push compilation-unit-report all-compilation-unit-reports)))))
+                  (destructuring-bind (&key deferred-warnings &allow-other-keys) result
+                    (when deferred-warnings
+                      (push deferred-warnings all-deferred-warnings)))))
                (when backgroundp
                  (decf background-actions)
                  (format t "~&[~vd to go] Done ~A~%"
@@ -821,12 +853,19 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                              (enqueue action-queue enabled-action)))))
           ;; What we do in each forked process
           (destructuring-bind (o . c) action
-            (perform o c)
-            (when backgroundp `(:deferred-warnings ,(get-deferred-warnings)))))
-        (mapc #'reconstitute-deferred-warnings all-compilation-unit-reports)
+            (cond
+              (backgroundp
+               (perform o c)
+               `(:deferred-warnings ,(get-deferred-warnings)))
+              ((action-already-done-p plan o c)
+               nil)
+              (t
+               (perform-with-restarts o c)
+               nil))))
+        (mapc #'reconstitute-deferred-warnings all-deferred-warnings)
         (assert (and (empty-p action-queue) (empty-p children))
                 (parents children)
-                "Problem with the dependency graph: ~S"
+                "Problem with the dependency graph: ~A"
                 (summarize-plan plan))))))
 
 ;;; Breadcrumbs: feature to replay otherwise non-deterministic builds
@@ -838,9 +877,9 @@ debug them later.")
 (defvar *breadcrumbs* nil
   "Actual breadcrumbs found, to override traversal for replay and debugging")
 
-(defmethod perform :after ((o operation) (c component))
+(defmethod perform :after (operation component)
   "Record the operations and components in a stream of breadcrumbs."
-  (format *breadcrumb-stream* "~S~%" `(,(type-of o) . ,(component-find-path c)))
+  (format *breadcrumb-stream* "~S~%" `(,(type-of operation) . ,(component-find-path component)))
   (force-output *breadcrumb-stream*))
 
 (defun read-breadcrumbs-from (operation pathname)
@@ -852,7 +891,7 @@ debug them later.")
   (if record-p
       (let ((*breadcrumb-stream*
               (open pathname :direction :output
-                             :if-exists :rename-and-delete :if-does-not-exist :create)))
+                             :if-exists :supersede :if-does-not-exist :create)))
         (format *breadcrumb-stream* ";; Breadcrumbs~%")
         (unwind-protect
              (funcall thunk)
@@ -867,6 +906,7 @@ debug them later.")
                             ((:using-breadcrumbs-from breadcrumb-input-pathname)
                              (make-broadcast-stream) read-breadcrumbs-p)
                             &allow-other-keys)
+  (declare (ignorable system))
   (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
     (when read-breadcrumbs-p
       (perform-plan (read-breadcrumbs-from operation breadcrumb-input-pathname)))
