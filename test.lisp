@@ -15,7 +15,7 @@
       *compile-verbose* nil
       *compile-print* nil)
 
-(require "asdf")
+(ignore-errors (require "asdf"))
 
 (in-package :asdf)
 

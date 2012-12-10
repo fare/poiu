@@ -2,8 +2,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.1")
-(defparameter *asdf-version-required-by-poiu* "2.26.14"))
+(defparameter *poiu-version* "1.29.2")
+(defparameter *asdf-version-required-by-poiu* "2.26.16"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -84,10 +84,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (declaim (optimize (speed 1) (debug 3) (safety 3)))
 
-;;; check versions
+;;; Check versions
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or clisp clozure sbcl)
-  (error "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
+  #-(or (and clisp unix) clozure sbcl)
+  (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
   #-asdf2
   (error "POIU requires ASDF2.")
   #+asdf2
@@ -95,7 +95,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (error "POIU ~A requires ASDF ~A or later, you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
-  #+clisp (require "linux")
+  #+(and clisp unix) (require "linux")
   #+sbcl (require :sb-posix)
   (export '(parallel-load-op parallel-compile-op
             parallel-load-system parallel-compile-system))
@@ -265,14 +265,17 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (make-sub-operation op 'compile-op))
 
 (defun parallel-load-system (system &rest args)
-  (apply #'operate 'parallel-load-op system args))
+  (apply #'operate 'parallel-load-op system args)
+  t)
 (defun parallel-compile-system (system &rest args)
-  (apply #'operate 'parallel-compile-op system args))
+  (apply #'operate 'parallel-compile-op system args)
+  t)
 
 (defgeneric run-in-background-p (operation component)
   (:method ((o operation) (c component))
     ;; We presume that actions that modify the filesystem can run in the background,
-    ;; whereas those that don't are meant to side-effect the current image.
+    ;; and don't need be run in the current image if they have already been done in another.
+    ;; whereas those that don't are meant to side-effect the current image and can't.
     (and (output-files o c) t)))
 
 (defclass parallel-plan ()
@@ -330,6 +333,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defmethod action-visited-stamp ((plan parallel-plan) (o operation) (c component))
   (car (gethash (node-for o c) (slot-value plan 'visited-nodes))))
+(defmethod action-already-done-p ((plan parallel-plan) (o operation) (c component))
+  (second (gethash (node-for o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
 
 (defun make-parallel-plan (operation component &key)
   (let ((plan (make-instance 'parallel-plan :ancestor operation)))
@@ -340,26 +345,22 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              (let ((node (node-for o c))
                    (action (cons o c)))
                (record-dependency parent node parents children)
-               (vector-push-extend action all-actions)
                (multiple-value-bind (s p) (gethash node visited-nodes)
-                 (if p
-                     (car s)
-                     (with-component-being-visited (o c)
-                       (visit-action
-                        o c stamp plan
-                        #'(lambda (stamp)
-                            #'(lambda (o c) (visit o c stamp node)))
-                        #'(lambda (o c done-p stamp)
-                            ;;(record-dependency parent (node-for o c) parents children)
-                            (setf (gethash node visited-nodes)
-                                  (list stamp ;; NB: used above
-                                        done-p ;; NB: used by action-already-done-p below
-                                        (when (and (not done-p) ;; count for users
-                                                   (run-in-background-p o c))
-                                          (incf background-actions))))
-                            (when done-p (mark-operation-done o c))
-                            (unless (gethash node children)
-                              (enqueue starting-points action))))))))))
+                 (when p (return-from visit (car s))))
+               (vector-push-extend action all-actions)
+               (with-component-being-visited (o c)
+                 (visit-action
+                  o c stamp plan
+                  #'(lambda (stamp)
+                      #'(lambda (o c) (visit o c stamp node)))
+                  #'(lambda (o c done-p stamp)
+                      (setf (gethash node visited-nodes)
+                            (list stamp done-p
+                                  (when (and (not done-p) (run-in-background-p o c))
+                                    (incf background-actions))))
+                      (when done-p (mark-operation-done o c))
+                      (unless (gethash node children)
+                        (enqueue starting-points action))))))))
         (visit operation component nil nil)
         plan))))
 
@@ -382,6 +383,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                                     :using (:hash-value v)
                                     :when v :collect (sexpify child))))
            #'< :key #'length))))))
+
+(defgeneric serialize-plan (plan))
+(defmethod serialize-plan ((plan list)) plan)
+(defmethod serialize-plan ((plan parallel-plan))
+  (with-slots ((a ancestor) all-actions visited-nodes) plan
+    (loop :for action :in (reverse (coerce all-actions 'list))
+          :for (o . c) = action :for node = (node-for o c)
+          :for (nil done-p nil) = (gethash node visited-nodes)
+          :unless done-p :collect action)))
 
 (defgeneric check-invariants (object))
 
@@ -410,15 +420,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmethod traverse ((operation parallelizable-operation) system)
   (make-checked-parallel-plan (unparallelize-operation operation) system))
 
-(defparameter *max-forks* 16)
-(defparameter *max-actual-forks* nil)
-
 ;;; subprocesses: abstraction for the implementation-dependent low-level API
 
-(defun finish-outputs ()
+(defun finish-outputs (&rest streams)
   ;; This is notably necessary for CCL, that buffers output
-  (finish-output *standard-output*)
-  (finish-output *error-output*)
+  (map () 'finish-output
+       (list* *standard-output* *error-output* *trace-output*
+              *terminal-io* *debug-io* *query-io* streams))
   (values))
 
 (defun disable-other-waiters ()
@@ -430,136 +438,127 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   #+sbcl
   (sb-sys:default-interrupt sb-unix:sigchld)) ; ignore-interrupt is undefined for SIGCHLD.
 
+(defparameter *max-forks* 16) ; limit how parallel we will try to be.
+(defparameter *max-actual-forks* nil) ; record how parallel we actually went.
 
 #+sbcl
 (progn
-
 (defun posix-exit (code)
   (sb-posix:exit code))
-
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
 ;; Note: can possibly modify parameters and reset in sb-ext:*after-gc-hooks*
 (defparameter *prefork-allocation-reserve-ratio* .80) ; default ratio: 80%
-
+(defun can-fork-p ()
+  (null (cdr (sb-thread:list-all-threads))))
 (defun should-i-gc-p ()
   (let ((available-bytes (- (sb-alien:extern-alien "auto_gc_trigger" sb-alien:long)
                             (sb-kernel:dynamic-usage)))
         (allocation-threshhold (sb-ext:bytes-consed-between-gcs)))
     (< available-bytes (* *prefork-allocation-reserve-ratio* allocation-threshhold))))
-
 (defun posix-fork ()
-  (unless (null (cdr (sb-thread:list-all-threads)))
+  (unless (can-fork-p)
     (error "Cannot fork: more than one active thread."))
   (when (should-i-gc-p)
     (sb-ext:gc))
   (sb-posix:fork))
-
-(defun posix-close (x)
-  (sb-posix:close x))
-
 (defun posix-setpgrp ()
   (sb-posix:setpgrp))
-
 (defun posix-wait ()
   (sb-posix:wait))
-
 (defun posix-wexitstatus (x)
   (sb-posix:wexitstatus x))
-
+#|
+(defun posix-close (x)
+  (sb-posix:close x))
 (defun posix-pipe ()
   (sb-posix:pipe))
-
 (defun make-output-stream (fd)
   (sb-sys:make-fd-stream fd :output t))
-
 (defun make-input-stream (fd)
   (sb-sys:make-fd-stream fd :input t))
-
-);#+sbcl
+|#
+);sbcl
 
 #+clozure
 (progn
-
+(defun can-fork-p ()
+  (null (cdr (ccl::all-processes))))
 (defun posix-exit (n)
   (ccl:quit n))
-
 (defun posix-fork ()
   (unless (null (cdr (ccl:all-processes)))
     (error "Cannot fork: more than one active thread. Are you using single-threaded-ccl?"))
   (ccl:external-call "fork" :int))
-
-(defun posix-close (x)
-  (ccl::fd-close x))
-
 (defun posix-setpgrp ()
   (ccl::external-call "setpgrp" :int))
-
 (defun posix-wait ()
   (ccl::rlet ((status :signed))
     (let* ((retval (ccl::external-call "wait" :address status :signed)))
       (values retval (ccl::pref status :signed)))))
-
 (defun posix-wexitstatus (x)
   (ccl::wexitstatus x))
-
+#|
+(defun posix-close (x)
+  (ccl::fd-close x))
 (defun posix-pipe ()
   (ccl::pipe))
-
 (defun make-output-stream (fd)
   (ccl::make-fd-stream fd :direction :output))
-
 (defun make-input-stream (fd)
   (ccl::make-fd-stream fd :direction :input))
-
-);#+clozure
+|#
+);clozure
 
 #+clisp ;;; CLISP specific fork support
 (progn
-
+(defun can-fork-p ()
+  (and (find-symbol* 'wait "LINUX") (find-symbol* 'fork "LINUX") t))
 (defun posix-exit (n)
   (ext:quit n))
-
 (defun posix-fork ()
-  (linux:fork))
-
-(defun posix-close (x)
-  (linux:close x))
-
+  (funcall (find-symbol* 'fork "LINUX")))
 (defun posix-setpgrp ()
-  (posix:setpgrp))
-
+  (aif (find-symbol* 'setprg 'posix) (funcall it)))
 (defun no-child-process-condition-p (c)
   (and (typep c 'system::simple-os-error)
        (equal (simple-condition-format-control c)
                   "UNIX error ~S (ECHILD): No child processes
 ")))
-
 (defun posix-wait ()
   (handler-case
-      (multiple-value-bind (pid status code) (posix:wait)
-        (values pid (list pid status code)))
+      (multiple-value-bind (pid status code) (funcall (find-symbol* 'wait "LINUX"))
+        (values (and pid (not (= pid -1))) (list pid status code)))
     ((and system::simple-os-error (satisfies no-child-process-condition-p)) ()
       (values nil nil))))
-
 (defun posix-wexitstatus (x)
   (if (eq :exited (second x))
     (third x)
     (cons (second x) (third x))))
-
+#|
+(defun posix-close (x)
+  (LINUX:close x))
 (defun posix-pipe ()
-  (multiple-value-bind (code p) (linux:pipe)
+  (multiple-value-bind (code p) (LINUX:pipe)
     (unless (zerop code)
       (error "couldn't make pipes"))
     (values (aref p 0) (aref p 1))))
-
 (defun make-output-stream (fd)
   (ext:make-stream fd :direction :output))
-
 (defun make-input-stream (fd)
   (ext:make-stream fd :direction :input))
+|#
+);clisp
 
-);#+clisp
+#-(or sbcl ccl clisp)
+(progn
+(defun can-fork-p () nil)
+(defun posix-exit (n) nil)
+(defun posix-fork () nil)
+(defun posix-setpgrp () nil)
+(defun posix-wait () (values nil nil))
+(defun posix-wexitstatus (x) x)
+);unsupported implemenetations
 
 ;;; Timing the build process
 
@@ -802,10 +801,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
      (make-pathname :name (format nil "~A.ASDF-~A" (file-namestring p) (type-of o))
                     :type "process-result" :defaults p))))
 
-(defmethod action-already-done-p ((plan parallel-plan) (o operation) (c component))
-  (second (gethash (node-for o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
-
 (defmethod perform-plan ((plan parallel-plan) &key)
+  (unless (can-fork-p)
+    (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
+          #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
+    (return-from perform-plan (perform-plan (serialize-plan plan))))
   (with-slots ((action-queue starting-points) children parents ancestor background-actions) plan
     (let ((all-deferred-warnings nil)
           (ltogo (unless (zerop background-actions) (ceiling (log background-actions 10))))
@@ -869,7 +869,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                 (summarize-plan plan))))))
 
 ;;; Breadcrumbs: feature to replay otherwise non-deterministic builds
-(defvar *breadcrumb-stream* (make-broadcast-stream)
+(defvar *breadcrumb-stream* nil
   "Stream that records the trail of operations on components.
 As the order of ASDF operations in general and parallel operations in
 particular are randomized, it is necessary to record them to replay &
@@ -879,8 +879,9 @@ debug them later.")
 
 (defmethod perform :after (operation component)
   "Record the operations and components in a stream of breadcrumbs."
-  (format *breadcrumb-stream* "~S~%" `(,(type-of operation) . ,(component-find-path component)))
-  (force-output *breadcrumb-stream*))
+  (when *breadcrumb-stream*
+    (format *breadcrumb-stream* "~S~%" `(,(type-of operation) . ,(component-find-path component)))
+    (force-output *breadcrumb-stream*)))
 
 (defun read-breadcrumbs-from (operation pathname)
   (with-open-file (f pathname)
@@ -888,7 +889,7 @@ debug them later.")
           :collect (cons (make-sub-operation operation op) (find-component () comp)))))
 
 (defun call-recording-breadcrumbs (pathname record-p thunk)
-  (if record-p
+  (if (and record-p (not *breadcrumb-stream*))
       (let ((*breadcrumb-stream*
               (progn
                 (delete-file-if-exists pathname)
