@@ -2,8 +2,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.2")
-(defparameter *asdf-version-required-by-poiu* "2.26.16"))
+(defparameter *poiu-version* "1.29.3")
+(defparameter *asdf-version-required-by-poiu* "2.26.21"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -32,7 +32,7 @@ with a chance to debug the issue and restart the operation.
 
 POIU was currently only made to work with SBCL, CCL and CLISP.
 Porting to another Lisp implementation that supports ASDF
-should not be difficult. [Note: the CLISP port somehow seems less stable.]
+should not be difficult. [Note: the CLISP port is somewhat less stable.]
 
 Warning to CCL users: you need to save a CCL image that doesn't start threads
 at startup in order to use POIU (or anything that uses fork).
@@ -57,7 +57,8 @@ POIU was initially written by Andreas Fuchs in 2007
 as part of an experiment funded by ITA Software, Inc.
 It was subsequently modified by Francois-Rene Rideau at ITA Software, who
 adapted POIU for use with XCVB in 2009, wrote the CCL and CLISP ports,
-and refactored code between ASDF and POIU.
+moved code from POIU to ASDF, and
+rewrote both of them together in a simpler way.
 The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 ;;; ASDF is
@@ -86,7 +87,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 ;;; Check versions
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or (and clisp unix) clozure sbcl)
+  #-(or clisp clozure sbcl)
   (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
   #-asdf2
   (error "POIU requires ASDF2.")
@@ -95,7 +96,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (error "POIU ~A requires ASDF ~A or later, you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
-  #+(and clisp unix) (require "linux")
+  #+clisp (ignore-errors (eval '(require "linux")))
   #+sbcl (require :sb-posix)
   (export '(parallel-load-op parallel-compile-op
             parallel-load-system parallel-compile-system))
@@ -260,9 +261,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defgeneric unparallelize-operation (operation))
 (defmethod unparallelize-operation ((op parallel-load-op))
-  (make-sub-operation op 'load-op))
+  (find-operation op 'load-op))
 (defmethod unparallelize-operation ((op compile-op))
-  (make-sub-operation op 'compile-op))
+  (find-operation op 'compile-op))
 
 (defun parallel-load-system (system &rest args)
   (apply #'operate 'parallel-load-op system args)
@@ -309,7 +310,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   ;; marks the action of operation on component as done in the deps hash-tables,
   ;; returns a list of new actions that are enabled by it being done.
   (check-type operation operation)
-  (let* ((action (node-for operation component))
+  (let* ((action (cons operation component))
          (action-parents (aif (gethash action parents) (table-keys it)))
          (action-children (aif (gethash action children) (table-keys it))))
     (remhash action parents)
@@ -332,36 +333,34 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              :and :collect child))))
 
 (defmethod action-visited-stamp ((plan parallel-plan) (o operation) (c component))
-  (car (gethash (node-for o c) (slot-value plan 'visited-nodes))))
+  (car (gethash (cons o c) (slot-value plan 'visited-nodes))))
 (defmethod action-already-done-p ((plan parallel-plan) (o operation) (c component))
-  (second (gethash (node-for o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
+  (second (gethash (cons o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
 
 (defun make-parallel-plan (operation component &key)
   (let ((plan (make-instance 'parallel-plan :ancestor operation)))
     (with-slots (starting-points children parents ancestor
                  background-actions visited-nodes all-actions) plan
       (labels
-          ((visit (o c stamp parent)
-             (let ((node (node-for o c))
-                   (action (cons o c)))
-               (record-dependency parent node parents children)
-               (multiple-value-bind (s p) (gethash node visited-nodes)
+          ((visit (o c parent)
+             (let ((action (cons o c)))
+               (record-dependency parent action parents children)
+               (multiple-value-bind (s p) (gethash action visited-nodes)
                  (when p (return-from visit (car s))))
                (vector-push-extend action all-actions)
                (with-component-being-visited (o c)
                  (visit-action
-                  o c stamp plan
-                  #'(lambda (stamp)
-                      #'(lambda (o c) (visit o c stamp node)))
+                  o c plan
+                  #'(lambda (o c) (visit o c action))
                   #'(lambda (o c done-p stamp)
-                      (setf (gethash node visited-nodes)
+                      (setf (gethash action visited-nodes)
                             (list stamp done-p
                                   (when (and (not done-p) (run-in-background-p o c))
                                     (incf background-actions))))
                       (when done-p (mark-operation-done o c))
-                      (unless (gethash node children)
+                      (unless (gethash action children)
                         (enqueue starting-points action))))))))
-        (visit operation component nil nil)
+        (visit operation component nil)
         plan))))
 
 (defun summarize-plan (plan)
@@ -377,8 +376,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            (loop :for parent :being :the :hash-keys :in children
                  :using (:hash-value progeny)
                  :collect `(,(sexpify parent)
-                            ,(destructuring-bind (o . c) (node-action ancestor parent)
-                               (if (action-already-done-p plan o c) :- :+))
+                            ,(if (action-already-done-p plan ancestor parent) :- :+)
                             ,@(loop :for child :being :the :hash-keys :in progeny
                                     :using (:hash-value v)
                                     :when v :collect (sexpify child))))
@@ -389,15 +387,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmethod serialize-plan ((plan parallel-plan))
   (with-slots ((a ancestor) all-actions visited-nodes) plan
     (loop :for action :in (reverse (coerce all-actions 'list))
-          :for (o . c) = action :for node = (node-for o c)
-          :for (nil done-p nil) = (gethash node visited-nodes)
+          :for (o . c) = action
+          :for (nil done-p nil) = (gethash action visited-nodes)
           :unless done-p :collect action)))
 
 (defgeneric check-invariants (object))
-
-(defun node-action (op node)
-  (destructuring-bind (opname . comp) node
-    (cons (make-sub-operation op opname) comp)))
 
 (defmethod check-invariants ((plan parallel-plan))
   ;; This destructively checks that the dependency tree model is coherent.
@@ -407,8 +401,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (collect action)
         (destructuring-bind (operation . component) action
           (enqueue-many action-queue
-                        (loop :for node :in (mark-as-done operation component parents children)
-                              :collect (node-action ancestor node)))))
+                        (mark-as-done operation component parents children))))
       (unless (empty-p children)
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
@@ -844,11 +837,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                  (format t "~&[~vd to go] Done ~A~%"
                          ltogo background-actions (operation-description o c))
                  (finish-outputs))
-               (loop :for enabled-node :in (mark-as-done o c parents children)
-                     :for (e-o . e-c) = enabled-node
-                     :for ee-o = (make-sub-operation o e-o)
-                     :for enabled-action = (cons ee-o e-c)
-                     :do (if (run-in-background-p ee-o e-c)
+               (loop :for enabled-action :in (mark-as-done o c parents children)
+                     :for (e-o . e-c) = enabled-action
+                     :do (if (run-in-background-p e-o e-c)
                              (enqueue-in-front action-queue enabled-action)
                              (enqueue action-queue enabled-action)))))
           ;; What we do in each forked process
@@ -886,7 +877,7 @@ debug them later.")
 (defun read-breadcrumbs-from (operation pathname)
   (with-open-file (f pathname)
     (loop :for (op . comp) = (read f nil nil) :while op
-          :collect (cons (make-sub-operation operation op) (find-component () comp)))))
+          :collect (cons (find-operation operation op) (find-component () comp)))))
 
 (defun call-recording-breadcrumbs (pathname record-p thunk)
   (if (and record-p (not *breadcrumb-stream*))

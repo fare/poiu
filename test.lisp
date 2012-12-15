@@ -85,7 +85,7 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (return))))
     (asdf:parallel-load-system
      :exscribe :verbose t
-     ;;:force :all
+     :force :all
      :breadcrumbs-to "/tmp/breadcrumbs.text")
     (funcall (find-symbol "PROCESS-COMMAND-LINE" "EXSCRIBE")
              `("-I" ,(subnamestring *fare* "fare/www/")
