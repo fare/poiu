@@ -3,8 +3,9 @@
 ;;;                                                                  ;;;
 ;;; Free Software, same MIT-style license as ASDF. See poiu.lisp.    ;;;
 ;;;                                                                  ;;;
-;;; Copyright (c) 2001-2011 ITA Software, Inc.  All rights reserved. ;;;
-;;; Copyright (c) 2011-2012 Google, Inc.  All rights reserved.       ;;;
+;;; Copyright (c) 2001 Daniel Barlow                                 ;;;
+;;; Copyright (c) 2008 ITA Software                                  ;;;
+;;; Copyright (c) 2011 Google, Inc.                                  ;;;
 ;;;                                                                  ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -13,7 +14,7 @@
 
 (let ((old-ver (asdf-version)))
   (load-system :asdf)
-  (let ((min "2.26.21")
+  (let ((min "2.26.51")
 	(ver (asdf-version)))
     (unless (or (version-satisfies old-ver "2.014.8") ; first version to do magic upgrade
 		(equal ver old-ver))
@@ -32,5 +33,5 @@ POIU is a variant of ASDF that may operate on your systems in parallel.
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
-    :depends-on ((:version :asdf "2.26.21")) ; for new-style compute-action-stamp, visit-action
+    :depends-on ((:version :asdf "2.26.51")) ; for new-style traverse-action, action-status
     :components ((:file "poiu")))

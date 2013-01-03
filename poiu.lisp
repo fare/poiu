@@ -2,8 +2,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.3")
-(defparameter *asdf-version-required-by-poiu* "2.26.21"))
+(defparameter *poiu-version* "1.29.4")
+(defparameter *asdf-version-required-by-poiu* "2.26.51"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -104,13 +104,23 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 ;;; Some general purpose data structures we use
 (defgeneric table-values (table))
+(defgeneric table-keys (table))
+(defgeneric empty-p (collection))
+(defgeneric queue-tail (queue))
+(defgeneric (setf queue-tail) (new-tail queue))
+(defgeneric enqueue (queue value))
+(defgeneric enqueue-new (queue value &key test test-not))
+(defgeneric enqueue-in-front (queue value))
+(defgeneric empty-p (queue))
+(defgeneric dequeue (queue))
+(defgeneric enqueue-many (queue list))
+(defgeneric queue-contents (queue))
+(defgeneric dequeue-all (queue))
+
 (defmethod table-values ((table hash-table))
   (loop :for val :being :the :hash-values :of table :collect val))
-(defgeneric table-keys (table))
 (defmethod table-keys ((table hash-table))
   (loop :for key :being :the :hash-keys :of table :collect key))
-
-(defgeneric empty-p (collection))
 (defmethod empty-p ((table hash-table))
   (zerop (hash-table-count table)))
 
@@ -256,14 +266,14 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 ;;; Toplevel parallel operations
 (defclass parallelizable-operation (operation) ())
-(defclass parallel-compile-op (compile-op parallelizable-operation) ())
-(defclass parallel-load-op (load-op parallelizable-operation) ())
+(defclass parallel-compile-op (parallelizable-operation) ())
+(defclass parallel-load-op (parallelizable-operation) ())
 
 (defgeneric unparallelize-operation (operation))
-(defmethod unparallelize-operation ((op parallel-load-op))
-  (find-operation op 'load-op))
-(defmethod unparallelize-operation ((op compile-op))
-  (find-operation op 'compile-op))
+(defmethod unparallelize-operation ((o parallel-load-op)) (find-operation o 'load-op))
+(defmethod unparallelize-operation ((o compile-op)) (find-operation o 'compile-op))
+(defmethod component-depends-on ((o parallelizable-operation) c)
+  `((,(unparallelize-operation o) ,c) ,@(call-next-method)))
 
 (defun parallel-load-system (system &rest args)
   (apply #'operate 'parallel-load-op system args)
@@ -272,25 +282,19 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (apply #'operate 'parallel-compile-op system args)
   t)
 
-(defgeneric run-in-background-p (operation component)
-  (:method ((o operation) (c component))
-    ;; We presume that actions that modify the filesystem can run in the background,
-    ;; and don't need be run in the current image if they have already been done in another.
-    ;; whereas those that don't are meant to side-effect the current image and can't.
-    (and (output-files o c) t)))
-
-(defclass parallel-plan ()
-  ((starting-points :initform (simple-queue))
-   (children :initform (make-hash-table :test #'equal)) ;; map an action to a (hash)set of "children" that it depends on
-   (parents :initform (make-hash-table :test #'equal)) ;; map an action to a (hash)set of "parents" that depend on it
-   (background-actions :initform 0 :accessor plan-background-actions)
-   (visited-nodes :initform (make-hash-table :test #'equal))
-   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0))
-   (ancestor :initarg :ancestor)))
+(defclass parallel-plan (plan-traversal)
+  ((starting-points :initform (simple-queue) :reader plan-starting-points)
+   (children :initform (make-hash-table :test #'equal) :reader plan-children
+            :documentation "map an action to a (hash)set of \"children\" that it depends on")
+   (parents :initform (make-hash-table :test #'equal) :reader plan-parents
+            :documentation "map an action to a (hash)set of \"parents\" that depend on it")
+   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)
+   (ancestor :initarg :ancestor :reader plan-ancestor)))
 
 (defmethod print-object ((plan parallel-plan) stream)
   (print-unreadable-object (plan stream :type t :identity t)
-    (pprint (summarize-plan plan) stream)))
+    (with-standard-io-syntax
+      (pprint (summarize-plan plan) stream))))
 
 (defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
   (with-slots (starting-points children) plan
@@ -332,36 +336,24 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              :do (remhash child parents)
              :and :collect child))))
 
-(defmethod action-visited-stamp ((plan parallel-plan) (o operation) (c component))
-  (car (gethash (cons o c) (slot-value plan 'visited-nodes))))
-(defmethod action-already-done-p ((plan parallel-plan) (o operation) (c component))
-  (second (gethash (cons o c) (slot-value plan 'visited-nodes)))) ;; so say the Plan
+(defmethod plan-record-dependency ((plan parallel-plan) (o operation) (c component))
+  (with-slots (children parents visiting-action-list) plan
+    (let ((action (cons o c))
+          (parent (first visiting-action-list)))
+      (record-dependency parent action parents children))))
+
+(defmethod (setf plan-action-status) :after
+    (new-status (p parallel-plan) (o operation) (c component))
+  (when (action-planned-p new-status)
+    (let ((action (cons o c)))
+      (vector-push-extend action (plan-all-actions p))
+      (unless (gethash action (plan-children p))
+        (enqueue (plan-starting-points p) action)))))
 
 (defun make-parallel-plan (operation component &key)
   (let ((plan (make-instance 'parallel-plan :ancestor operation)))
-    (with-slots (starting-points children parents ancestor
-                 background-actions visited-nodes all-actions) plan
-      (labels
-          ((visit (o c parent)
-             (let ((action (cons o c)))
-               (record-dependency parent action parents children)
-               (multiple-value-bind (s p) (gethash action visited-nodes)
-                 (when p (return-from visit (car s))))
-               (vector-push-extend action all-actions)
-               (with-component-being-visited (o c)
-                 (visit-action
-                  o c plan
-                  #'(lambda (o c) (visit o c action))
-                  #'(lambda (o c done-p stamp)
-                      (setf (gethash action visited-nodes)
-                            (list stamp done-p
-                                  (when (and (not done-p) (run-in-background-p o c))
-                                    (incf background-actions))))
-                      (when done-p (mark-operation-done o c))
-                      (unless (gethash action children)
-                        (enqueue starting-points action))))))))
-        (visit operation component nil)
-        plan))))
+    (traverse-action plan operation component t)
+    plan))
 
 (defun summarize-plan (plan)
   (with-slots (starting-points children ancestor) plan
@@ -370,17 +362,20 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
               :collect (cons (type-of o) (component-find-path c))))
       (:dependencies
        ,(flet ((sexpify (action)
-                 (destructuring-bind (oname . c) action
-                   (cons oname (component-find-path c)))))
-          (sort
-           (loop :for parent :being :the :hash-keys :in children
-                 :using (:hash-value progeny)
-                 :collect `(,(sexpify parent)
-                            ,(if (action-already-done-p plan ancestor parent) :- :+)
-                            ,@(loop :for child :being :the :hash-keys :in progeny
-                                    :using (:hash-value v)
-                                    :when v :collect (sexpify child))))
-           #'< :key #'length))))))
+                 (destructuring-bind (o . c) action
+                   (cons (type-of o) (component-find-path c)))))
+          (mapcar #'rest
+                  (sort
+                   (loop :for parent :being :the :hash-keys :in children
+                         :using (:hash-value progeny)
+                         :for (o . c) = parent
+                         :collect `(,(action-index (plan-action-status plan o c))
+                                    ,(sexpify parent)
+                                    ,(if (action-already-done-p plan o c) :- :+)
+                                    ,@(loop :for child :being :the :hash-keys :in progeny
+                                            :using (:hash-value v)
+                                            :when v :collect (sexpify child))))
+                   #'< :key #'first)))))))
 
 (defgeneric serialize-plan (plan))
 (defmethod serialize-plan ((plan list)) plan)
@@ -411,7 +406,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (make-parallel-plan operation module)) ;; do it again.
 
 (defmethod traverse ((operation parallelizable-operation) system)
-  (make-checked-parallel-plan (unparallelize-operation operation) system))
+  (make-checked-parallel-plan operation system))
 
 ;;; subprocesses: abstraction for the implementation-dependent low-level API
 
@@ -799,9 +794,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
           #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
     (return-from perform-plan (perform-plan (serialize-plan plan))))
-  (with-slots ((action-queue starting-points) children parents ancestor background-actions) plan
+  (with-slots ((action-queue starting-points) children parents ancestor planned-output-action-count) plan
     (let ((all-deferred-warnings nil)
-          (ltogo (unless (zerop background-actions) (ceiling (log background-actions 10))))
+          (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10))))
           (*package* *package*)
           (*readtable* *readtable*))
       (with-compilation-unit ()
@@ -809,8 +804,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             (action-queue ;; variable for each action, queue object
              :variables (:item action :backgroundp backgroundp :result result :condition condition)
              :background-p (destructuring-bind (o . c) action
-                             (and (run-in-background-p o c)
-                                  (not (action-already-done-p plan o c))))
+                             (not (or (needed-in-image-p o c)
+                                      (action-already-done-p plan o c))))
              :announce
              (destructuring-bind (o . c) action
                (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
@@ -833,15 +828,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                     (when deferred-warnings
                       (push deferred-warnings all-deferred-warnings)))))
                (when backgroundp
-                 (decf background-actions)
+                 (decf planned-output-action-count)
                  (format t "~&[~vd to go] Done ~A~%"
-                         ltogo background-actions (operation-description o c))
+                         ltogo planned-output-action-count (operation-description o c))
                  (finish-outputs))
                (loop :for enabled-action :in (mark-as-done o c parents children)
                      :for (e-o . e-c) = enabled-action
-                     :do (if (run-in-background-p e-o e-c)
-                             (enqueue-in-front action-queue enabled-action)
-                             (enqueue action-queue enabled-action)))))
+                     :do (if (needed-in-image-p e-o e-c)
+                             (enqueue action-queue enabled-action)
+                             (enqueue-in-front action-queue enabled-action)))))
           ;; What we do in each forked process
           (destructuring-bind (o . c) action
             (cond

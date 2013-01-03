@@ -15,7 +15,7 @@
       *compile-verbose* nil
       *compile-print* nil)
 
-(ignore-errors (require "asdf"))
+(require "asdf")
 
 (in-package :asdf)
 
@@ -44,7 +44,6 @@ outputs a tag plus a list of source expressions and their resulting values, retu
       *compile-print* t
       *asdf-verbose* t)
 
-
 (format *error-output* "~&POIU ~A~%" *poiu-version*)
 
 (defun print-backtrace (out)
@@ -60,7 +59,6 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 (trace
  traverse ;; traverse-component
  make-parallel-plan
- ;; run-in-background-p
  ;; mark-as-done
  ;; process-return process-result ;; action-result-file
  ;; input-files output-files file-write-date
@@ -87,7 +85,7 @@ outputs a tag plus a list of source expressions and their resulting values, retu
      :exscribe :verbose t
      :force :all
      :breadcrumbs-to "/tmp/breadcrumbs.text")
-    (funcall (find-symbol "PROCESS-COMMAND-LINE" "EXSCRIBE")
+    (funcall (asdf::find-symbol* :process-command-line :exscribe)
              `("-I" ,(subnamestring *fare* "fare/www/")
                "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
 
