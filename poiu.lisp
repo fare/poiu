@@ -2,8 +2,8 @@
 ;;; This is POIU: Parallel Operator on Independent Units
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.4")
-(defparameter *asdf-version-required-by-poiu* "2.26.51"))
+(defparameter *poiu-version* "1.29.5")
+(defparameter *asdf-version-required-by-poiu* "2.26.54"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -288,8 +288,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             :documentation "map an action to a (hash)set of \"children\" that it depends on")
    (parents :initform (make-hash-table :test #'equal) :reader plan-parents
             :documentation "map an action to a (hash)set of \"parents\" that depend on it")
-   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)
-   (ancestor :initarg :ancestor :reader plan-ancestor)))
+   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)))
 
 (defmethod print-object ((plan parallel-plan) stream)
   (print-unreadable-object (plan stream :type t :identity t)
@@ -350,13 +349,14 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
       (unless (gethash action (plan-children p))
         (enqueue (plan-starting-points p) action)))))
 
-(defun make-parallel-plan (operation component &key)
-  (let ((plan (make-instance 'parallel-plan :ancestor operation)))
+(defun make-parallel-plan (operation component &rest keys &key &allow-other-keys)
+  (let ((plan (apply 'make-instance 'parallel-plan
+                     :system (component-system component) keys)))
     (traverse-action plan operation component t)
     plan))
 
 (defun summarize-plan (plan)
-  (with-slots (starting-points children ancestor) plan
+  (with-slots (starting-points children) plan
     `((:starting-points
        ,(loop :for (o . c) :in (queue-contents starting-points)
               :collect (cons (type-of o) (component-find-path c))))
@@ -380,7 +380,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric serialize-plan (plan))
 (defmethod serialize-plan ((plan list)) plan)
 (defmethod serialize-plan ((plan parallel-plan))
-  (with-slots ((a ancestor) all-actions visited-nodes) plan
+  (with-slots (all-actions visited-nodes) plan
     (loop :for action :in (reverse (coerce all-actions 'list))
           :for (o . c) = action
           :for (nil done-p nil) = (gethash action visited-nodes)
@@ -391,7 +391,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmethod check-invariants ((plan parallel-plan))
   ;; This destructively checks that the dependency tree model is coherent.
   (while-collecting (collect)
-    (with-slots (starting-points parents children ancestor) plan
+    (with-slots (starting-points parents children) plan
       (with-queue (action action-queue starting-points)
         (collect action)
         (destructuring-bind (operation . component) action
@@ -401,12 +401,12 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
 
-(defun make-checked-parallel-plan (operation module)
-  (check-invariants (make-parallel-plan operation module)) ;; do it once, destructively check it
-  (make-parallel-plan operation module)) ;; do it again.
+(defun make-checked-parallel-plan (operation module &rest keys &key &allow-other-keys)
+  (check-invariants (apply 'make-parallel-plan operation module keys)) ;; do it once, destructively check it
+  (apply 'make-parallel-plan operation module keys)) ;; do it again.
 
-(defmethod traverse ((operation parallelizable-operation) system)
-  (make-checked-parallel-plan operation system))
+(defmethod traverse ((operation parallelizable-operation) system &rest keys &key &allow-other-keys)
+  (apply 'make-checked-parallel-plan operation system keys))
 
 ;;; subprocesses: abstraction for the implementation-dependent low-level API
 
@@ -794,7 +794,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
           #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
     (return-from perform-plan (perform-plan (serialize-plan plan))))
-  (with-slots ((action-queue starting-points) children parents ancestor planned-output-action-count) plan
+  (with-slots ((action-queue starting-points) children parents planned-output-action-count) plan
     (let ((all-deferred-warnings nil)
           (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10))))
           (*package* *package*)
@@ -891,13 +891,12 @@ debug them later.")
 (defmacro recording-breadcrumbs ((pathname record-p) &body body)
   `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
 
-(defmethod operate :around (operation system &key
+(defmethod operate :before (operation system &rest keys &key
                             (breadcrumbs-to nil record-breadcrumbs-p)
                             ((:using-breadcrumbs-from breadcrumb-input-pathname)
                              (make-broadcast-stream) read-breadcrumbs-p)
                             &allow-other-keys)
-  (declare (ignorable system))
+  (declare (ignorable system keys))
   (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
     (when read-breadcrumbs-p
-      (perform-plan (read-breadcrumbs-from operation breadcrumb-input-pathname)))
-    (call-next-method)))
+      (perform-plan (read-breadcrumbs-from operation breadcrumb-input-pathname)))))
