@@ -1,9 +1,10 @@
 ;; -*- mode: Lisp ; coding: utf-8 -*-
 ;;; This is POIU: Parallel Operator on Independent Units
+#+xcvb (module (:depends-on ("asdf")))
 (cl:in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.5")
-(defparameter *asdf-version-required-by-poiu* "2.26.54"))
+(defparameter *poiu-version* "1.29.6")
+(defparameter *asdf-version-required-by-poiu* "2.26.114"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -98,8 +99,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
   #+clisp (ignore-errors (eval '(require "linux")))
   #+sbcl (require :sb-posix)
-  (export '(parallel-load-op parallel-compile-op
-            parallel-load-system parallel-compile-system))
+  (export '(parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
 
 ;;; Some general purpose data structures we use
@@ -168,120 +168,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmacro with-queue ((var qvar &optional (qval '(simple-queue))) &body body)
   `(let ((,qvar ,qval)) (call-with-queue (lambda (,var) ,@body) ,qvar)))
 
-;;; Reifying and reconstituting objects for sending across processes
-(defun cl-symbol-p (x)
-  (and (symbolp x) (eq (find-package :cl) (symbol-package x))))
-(deftype cl-symbol () '(and symbol (satisfies cl-symbol-p)))
-(defun reify-symbol (sym)
-  (vector (symbol-name sym) (package-name (symbol-package sym))))
-(defun reconstitute-symbol (sym)
-  (intern (aref sym 0) (aref sym 1)))
-(defun reify-simple-sexp (sexp)
-  (etypecase sexp
-    ((or cl-symbol keyword number character simple-string pathname) sexp)
-    (cons (cons (reify-simple-sexp (car sexp)) (reify-simple-sexp (cdr sexp))))
-    (symbol (reify-symbol sexp))))
-(defun reconstitute-simple-sexp (sexp)
-  (etypecase sexp
-    ((or cl-symbol keyword number character simple-string pathname) sexp)
-    (cons (cons (reconstitute-simple-sexp (car sexp)) (reconstitute-simple-sexp (cdr sexp))))
-    ((simple-vector 2) (reconstitute-symbol sexp))))
-
-;;; Extracting undefined-warnings from the compilation-unit
-;;; To be passed through the above reify/reconstitute link, it must be a "simple-sexp"
-(defun undefined-warning-sexp (warning)
-  #-sbcl (declare (ignore warning))
-  #+sbcl
-  (list*
-   (sb-c::undefined-warning-kind warning)
-   (sb-c::undefined-warning-name warning)
-   (sb-c::undefined-warning-count warning)
-   (mapcar
-    #'(lambda (frob)
-        ;; the lexenv slot can be ignored for reporting purposes
-        `(:enclosing-source ,(sb-c::compiler-error-context-enclosing-source frob)
-          :source ,(sb-c::compiler-error-context-source frob)
-          :original-source ,(sb-c::compiler-error-context-original-source frob)
-          :context ,(sb-c::compiler-error-context-context frob)
-          :file-name ,(sb-c::compiler-error-context-file-name frob) ; a pathname
-          :file-position ,(sb-c::compiler-error-context-file-position frob) ; an integer
-          :original-source-path ,(sb-c::compiler-error-context-original-source-path frob)))
-    (sb-c::undefined-warning-warnings warning))))
-
-(defun reconstitute-deferred-warnings (constructor-list)
-  #-sbcl (declare (ignore constructor-list))
-  #+sbcl
-  (dolist (item constructor-list)
-    ;; Each item is (symbol . adjustment) where the adjustment depends on the symbol.
-    ;; For *undefined-warnings*, the adjustment is a list of initargs.
-    ;; For everything else, it's an integer.
-    (destructuring-bind (symbol . adjustment) item
-      (case symbol
-        ((sb-c::*undefined-warnings*)
-         (setf sb-c::*undefined-warnings*
-               (nconc (mapcan
-                       #'(lambda (stuff)
-                           (destructuring-bind (kind name count . rest) stuff
-                             (if (and (eq kind :function) (fboundp name))
-                                 nil
-                                 (list
-                                  (sb-c::make-undefined-warning
-                                   :name name
-                                   :kind kind
-                                   :count count
-                                   :warnings
-                                   (mapcar #'(lambda (x)
-                                               (apply #'sb-c::make-compiler-error-context x))
-                                           rest))))))
-                       adjustment)
-                      sb-c::*undefined-warnings*)))
-        (otherwise
-         (set symbol (+ (symbol-value symbol) adjustment)))))))
-
-(defun get-deferred-warnings ()
-  #-sbcl nil
-  #+sbcl
-  (when sb-c::*in-compilation-unit*
-    ;; Try to send nothing through the pipe if nothing needs to be accumulated
-    `(,@(when sb-c::*undefined-warnings*
-          `((sb-c::*undefined-warnings* . ,(mapcar #'undefined-warning-sexp sb-c::*undefined-warnings*))))
-      ,@(loop for what in '(sb-c::*aborted-compilation-unit-count*
-                            sb-c::*compiler-error-count*
-                            sb-c::*compiler-warning-count*
-                            sb-c::*compiler-style-warning-count*
-                            sb-c::*compiler-note-count*)
-              for value = (symbol-value what)
-              when (plusp value)
-                collect `(,what . ,value)))))
-
-(defun reset-deferred-warnings ()
-  #+sbcl
-  (when sb-c::*in-compilation-unit*
-    (setf sb-c::*undefined-warnings* nil
-          sb-c::*aborted-compilation-unit-count* 0
-          sb-c::*compiler-error-count* 0
-          sb-c::*compiler-warning-count* 0
-          sb-c::*compiler-style-warning-count* 0
-          sb-c::*compiler-note-count* 0)))
-
-;;; Toplevel parallel operations
-(defclass parallelizable-operation (operation) ())
-(defclass parallel-compile-op (parallelizable-operation) ())
-(defclass parallel-load-op (parallelizable-operation) ())
-
-(defgeneric unparallelize-operation (operation))
-(defmethod unparallelize-operation ((o parallel-load-op)) (find-operation o 'load-op))
-(defmethod unparallelize-operation ((o compile-op)) (find-operation o 'compile-op))
-(defmethod component-depends-on ((o parallelizable-operation) c)
-  `((,(unparallelize-operation o) ,c) ,@(call-next-method)))
-
-(defun parallel-load-system (system &rest args)
-  (apply #'operate 'parallel-load-op system args)
-  t)
-(defun parallel-compile-system (system &rest args)
-  (apply #'operate 'parallel-compile-op system args)
-  t)
-
 (defclass parallel-plan (plan-traversal)
   ((starting-points :initform (simple-queue) :reader plan-starting-points)
    (children :initform (make-hash-table :test #'equal) :reader plan-children
@@ -290,49 +176,89 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             :documentation "map an action to a (hash)set of \"parents\" that depend on it")
    (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)))
 
+(defun parallel-operate (operation system &rest keys)
+  (apply 'operate operation system :plan-class 'parallel-plan keys))
+(defun parallel-load-system (system &rest args)
+  (apply 'load-system system :plan-class 'parallel-plan args))
+(defun parallel-compile-system (system &rest args)
+  (apply 'compile-system system :plan-class 'parallel-plan args))
+(defun parallel-build-system (system &rest args)
+  (apply 'build-system system :plan-class 'parallel-plan args))
+(defun parallel-test-system (system &rest args)
+  (apply 'test-system system :plan-class 'parallel-plan args))
+
+
 (defmethod print-object ((plan parallel-plan) stream)
   (print-unreadable-object (plan stream :type t :identity t)
-    (with-standard-io-syntax
+    (with-safe-io-syntax ()
       (pprint (summarize-plan plan) stream))))
 
 (defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
   (with-slots (starting-points children) plan
     (let ((component (find-component () component-path)))
-      (remove component (append (queue-contents starting-points) (table-keys children)) :key 'cdr :test-not 'eq))))
+      (remove component (append (queue-contents starting-points)
+                                (mapcar 'node-action (action-map-keys children)))
+              :key 'cdr :test-not 'eq))))
+
+(defun action-node (action)
+  (destructuring-bind (o . c) action
+    (check-type o operation)
+    (check-type c component)
+    (cons (type-of o) c)))
+(defun node-action (node)
+  (destructuring-bind (oc . c) node
+    (check-type oc symbol)
+    (check-type c component)
+    (cons (make-operation oc) c)))
+
+(defun make-action-map ()
+  (make-hash-table :test 'equal))
+(defun action-map (map action)
+  (gethash (action-node action) map))
+(defun action-unmap (map action)
+  (remhash (action-node action) map))
+(defun (setf action-map) (value map action)
+  (setf (gethash (action-node action) map) value))
+(defun action-map-values (map)
+  (table-values map))
+(defun action-map-keys (map)
+  (mapcar 'node-action (table-keys map)))
 
 (defun record-dependency (parent child parents children)
-  (unless (gethash child parents)
-    (setf (gethash child parents) (make-hash-table :test #'equal)))
+  (unless (action-map parents child)
+    (setf (action-map parents child) (make-action-map)))
   (when parent
-    (unless (gethash parent children)
-      (setf (gethash parent children) (make-hash-table :test #'equal)))
-    (setf (gethash child (gethash parent children)) t)
-    (setf (gethash parent (gethash child parents)) t)))
+    (unless (action-map children parent)
+      (setf (action-map children parent) (make-action-map)))
+    (setf (action-map (action-map children parent) child) t)
+    (setf (action-map (action-map parents child) parent) t)))
 
 (defun mark-as-done (operation component parents children)
   ;; marks the action of operation on component as done in the deps hash-tables,
   ;; returns a list of new actions that are enabled by it being done.
   (check-type operation operation)
   (let* ((action (cons operation component))
-         (action-parents (aif (gethash action parents) (table-keys it)))
-         (action-children (aif (gethash action children) (table-keys it))))
-    (remhash action parents)
+         (action-parents (if-let (it (action-map parents action))
+                           (action-map-keys it)))
+         (action-children (if-let (it (action-map children action))
+                            (action-map-keys it))))
+    (action-unmap parents action)
     (assert (null action-children))
-    (remhash action children)
+    (action-unmap children action)
     (values
      (loop :for parent :in action-parents
-           :for siblings = (gethash parent children)
+           :for siblings = (action-map children parent)
            :do (assert siblings)
-               (remhash action siblings)
+               (action-unmap siblings action)
            :when (empty-p siblings)
-             :do (remhash parent children)
+             :do (action-unmap children parent)
              :and :collect parent)
      (loop :for child :in action-children
-           :for siblings = (gethash child parents)
+           :for siblings = (action-map parents child)
            :do (assert siblings)
-               (remhash action siblings)
+               (action-map siblings action)
            :when (empty-p siblings)
-             :do (remhash child parents)
+             :do (action-map parents child)
              :and :collect child))))
 
 (defmethod plan-record-dependency ((plan parallel-plan) (o operation) (c component))
@@ -346,7 +272,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (when (action-planned-p new-status)
     (let ((action (cons o c)))
       (vector-push-extend action (plan-all-actions p))
-      (unless (gethash action (plan-children p))
+      (unless (action-map (plan-children p) action)
         (enqueue (plan-starting-points p) action)))))
 
 (defun make-parallel-plan (operation component &rest keys &key &allow-other-keys)
@@ -355,27 +281,32 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (traverse-action plan operation component t)
     plan))
 
+(defun reify-action (action)
+  (destructuring-bind (o . c) action
+    (check-type o operation)
+    (check-type c component)
+    (cons (type-of o) (component-find-path c))))
+
 (defun summarize-plan (plan)
   (with-slots (starting-points children) plan
     `((:starting-points
-       ,(loop :for (o . c) :in (queue-contents starting-points)
-              :collect (cons (type-of o) (component-find-path c))))
+       ,(loop :for action :in (queue-contents starting-points)
+              :collect (reify-action action)))
       (:dependencies
-       ,(flet ((sexpify (action)
-                 (destructuring-bind (o . c) action
-                   (cons (type-of o) (component-find-path c)))))
-          (mapcar #'rest
+       ,(mapcar #'rest
                   (sort
-                   (loop :for parent :being :the :hash-keys :in children
+                   (loop :for parent-node :being :the :hash-keys :in children
                          :using (:hash-value progeny)
+                         :for parent = (node-action parent-node)
                          :for (o . c) = parent
                          :collect `(,(action-index (plan-action-status plan o c))
-                                    ,(sexpify parent)
+                                    ,(reify-action parent)
                                     ,(if (action-already-done-p plan o c) :- :+)
-                                    ,@(loop :for child :being :the :hash-keys :in progeny
+                                    ,@(loop :for child-node :being :the :hash-keys :in progeny
                                             :using (:hash-value v)
-                                            :when v :collect (sexpify child))))
-                   #'< :key #'first)))))))
+                                            :for child = (node-action child-node)
+                                            :when v :collect (reify-action child))))
+                   #'< :key #'first))))))
 
 (defgeneric serialize-plan (plan))
 (defmethod serialize-plan ((plan list)) plan)
@@ -383,7 +314,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (with-slots (all-actions visited-nodes) plan
     (loop :for action :in (reverse (coerce all-actions 'list))
           :for (o . c) = action
-          :for (nil done-p nil) = (gethash action visited-nodes)
+          :for (nil done-p nil) = (action-map visited-nodes action)
           :unless done-p :collect action)))
 
 (defgeneric check-invariants (object))
@@ -401,21 +332,17 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
 
-(defun make-checked-parallel-plan (operation module &rest keys &key &allow-other-keys)
-  (check-invariants (apply 'make-parallel-plan operation module keys)) ;; do it once, destructively check it
-  (apply 'make-parallel-plan operation module keys)) ;; do it again.
+(defmethod traverse :before ((o operation) (c component) &rest keys &key plan-class &allow-other-keys)
+  (when (eq (or plan-class *default-plan-class*) 'parallel-plan)
+    ;; make a plan once already and destructively check it
+    (check-invariants (apply 'make-parallel-plan o c keys))))
 
-(defmethod traverse ((operation parallelizable-operation) system &rest keys &key &allow-other-keys)
-  (apply 'make-checked-parallel-plan operation system keys))
+(defmethod plan-actions ((plan parallel-plan))
+  plan)
+
+(setf *default-plan-class* 'parallel-plan)
 
 ;;; subprocesses: abstraction for the implementation-dependent low-level API
-
-(defun finish-outputs (&rest streams)
-  ;; This is notably necessary for CCL, that buffers output
-  (map () 'finish-output
-       (list* *standard-output* *error-output* *trace-output*
-              *terminal-io* *debug-io* *query-io* streams))
-  (values))
 
 (defun disable-other-waiters ()
   ;; KLUDGE: Try to undo problems caused by run-program.
@@ -501,13 +428,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 #+clisp ;;; CLISP specific fork support
 (progn
 (defun can-fork-p ()
-  (and (find-symbol* 'wait "LINUX") (find-symbol* 'fork "LINUX") t))
+  (and (find-symbol* 'wait "LINUX" nil) (find-symbol* 'fork "LINUX" nil) t))
 (defun posix-exit (n)
   (ext:quit n))
 (defun posix-fork ()
   (funcall (find-symbol* 'fork "LINUX")))
 (defun posix-setpgrp ()
-  (aif (find-symbol* 'setprg 'posix) (funcall it)))
+  (if-let (it (find-symbol* 'setprg 'posix nil)) (funcall it)))
 (defun no-child-process-condition-p (c)
   (and (typep c 'system::simple-os-error)
        (equal (simple-condition-format-control c)
@@ -575,15 +502,12 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun process-return (result-file result condition)
   (with-open-file (s result-file
                      :direction :output :if-exists :supersede :if-does-not-exist :create)
-    (with-standard-io-syntax
-      (let ((*package* (find-package :cl))
-            (*read-eval* nil)
-            (*print-readably* nil))
-        (write (reify-simple-sexp
-                `(:process-done
-                  ,@(when result `(:result ,result))
-                  ,@(when condition `(:condition ,(princ-to-string condition)))))
-               :stream s)))))
+    (with-safe-io-syntax ()
+      (write (reify-simple-sexp
+              `(:process-done
+                ,@(when result `(:result ,result))
+                ,@(when condition `(:condition ,(princ-to-string condition)))))
+             :stream s))))
 
 (defun process-result (process status)
   (block nil
@@ -595,11 +519,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (ignore-errors
          (with-open-file (s (process-result-file process)
                             :direction :input :if-does-not-exist :error)
-           (with-standard-io-syntax
-             (let ((*package* (find-package :cl))
-                   (*read-eval* nil)
-                   (*print-readably* nil))
-               (reconstitute-simple-sexp (read s))))))
+           (with-safe-io-syntax ()
+             (unreify-simple-sexp (read s)))))
       (when condition
         (return (values nil (make-condition 'process-failed :condition "Could not read result file"))))
       (unless (and (consp form) (eq (car form) :process-done))
@@ -842,13 +763,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             (cond
               (backgroundp
                (perform o c)
-               `(:deferred-warnings ,(get-deferred-warnings)))
+               `(:deferred-warnings ,(reify-deferred-warnings)))
               ((action-already-done-p plan o c)
                nil)
               (t
                (perform-with-restarts o c)
                nil))))
-        (mapc #'reconstitute-deferred-warnings all-deferred-warnings)
+        (mapc #'unreify-deferred-warnings all-deferred-warnings)
         (assert (and (empty-p action-queue) (empty-p children))
                 (parents children)
                 "Problem with the dependency graph: ~A"
@@ -866,7 +787,7 @@ debug them later.")
 (defmethod perform :after (operation component)
   "Record the operations and components in a stream of breadcrumbs."
   (when *breadcrumb-stream*
-    (format *breadcrumb-stream* "~S~%" `(,(type-of operation) . ,(component-find-path component)))
+    (format *breadcrumb-stream* "~S~%" (reify-action (cons operation component)))
     (force-output *breadcrumb-stream*)))
 
 (defun read-breadcrumbs-from (operation pathname)

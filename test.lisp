@@ -55,7 +55,7 @@ outputs a tag plus a list of source expressions and their resulting values, retu
   #+sbcl
   (sb-debug:backtrace most-positive-fixnum out))
 
-;;#+(or)
+#+(or)
 (trace
  traverse ;; traverse-component
  make-parallel-plan
