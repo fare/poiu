@@ -21,6 +21,6 @@ POIU is a variant of ASDF that may operate on your systems in parallel.
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
+  :defsystem-depends-on (:asdf) ; let's enhance our chances that ASDF 3 is loaded.
   :version (:read-file-form "poiu.lisp" :at (1 2 2))
-  :depends-on ((:version :asdf "2.26.136")) ; for :at specifier above
   :components ((:file "poiu")))

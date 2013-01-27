@@ -1,10 +1,10 @@
 ;; -*- mode: Lisp ; coding: utf-8 -*-
 ;;; This is POIU: Parallel Operator on Independent Units
 #+xcvb (module (:depends-on ("asdf")))
-(cl:in-package :asdf)
+(in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.6")
-(defparameter *asdf-version-required-by-poiu* "2.26.114"))
+(defparameter *poiu-version* "1.29.7")
+(defparameter *asdf-version-required-by-poiu* "2.26.150"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -90,11 +90,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #-(or clisp clozure sbcl)
   (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
-  #-asdf2
-  (error "POIU requires ASDF2.")
-  #+asdf2
-  (unless (asdf:version-satisfies (asdf:asdf-version) *asdf-version-required-by-poiu*)
-    (error "POIU ~A requires ASDF ~A or later, you only have ~A loaded."
+  (unless (or #+asdf3
+              (or (<= 3 (first (asdf/utility:parse-version (asdf:asdf-version))))
+                  (asdf:version-satisfies (asdf:asdf-version) *asdf-version-required-by-poiu*)))
+    (error "POIU ~A requires ASDF ~A or later, but you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
   #+clisp (ignore-errors (eval '(require "linux")))
@@ -116,6 +115,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric enqueue-many (queue list))
 (defgeneric queue-contents (queue))
 (defgeneric dequeue-all (queue))
+
+(defmethod empty-p ((x null))
+  (declare (ignorable x))
+  t)
 
 (defmethod table-values ((table hash-table))
   (loop :for val :being :the :hash-values :of table :collect val))
@@ -189,8 +192,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 
 (defmethod print-object ((plan parallel-plan) stream)
-  (print-unreadable-object (plan stream :type t :identity t)
-    (with-safe-io-syntax ()
+  (print-unreadable-object (plan stream :type t :identity nil)
+    (with-safe-io-syntax (:package :asdf)
       (pprint (summarize-plan plan) stream))))
 
 (defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
@@ -233,33 +236,40 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (setf (action-map (action-map children parent) child) t)
     (setf (action-map (action-map parents child) parent) t)))
 
-(defun mark-as-done (operation component parents children)
+(defun mark-as-done (plan operation component)
   ;; marks the action of operation on component as done in the deps hash-tables,
   ;; returns a list of new actions that are enabled by it being done.
   (check-type operation operation)
-  (let* ((action (cons operation component))
-         (action-parents (if-let (it (action-map parents action))
-                           (action-map-keys it)))
-         (action-children (if-let (it (action-map children action))
-                            (action-map-keys it))))
-    (action-unmap parents action)
-    (assert (null action-children))
-    (action-unmap children action)
-    (values
-     (loop :for parent :in action-parents
-           :for siblings = (action-map children parent)
-           :do (assert siblings)
-               (action-unmap siblings action)
-           :when (empty-p siblings)
-             :do (action-unmap children parent)
-             :and :collect parent)
-     (loop :for child :in action-children
-           :for siblings = (action-map parents child)
-           :do (assert siblings)
-               (action-map siblings action)
-           :when (empty-p siblings)
-             :do (action-map parents child)
-             :and :collect child))))
+  (with-slots (starting-points parents children) plan
+    (let* ((action (cons operation component))
+           (action-parents (if-let (it (action-map parents action))
+                             (action-map-keys it)))
+           (action-children (if-let (it (action-map children action))
+                              (action-map-keys it))))
+      (action-unmap parents action)
+      (action-unmap children action)
+      (let ((enabled-parents
+              (loop :for parent :in action-parents
+                    :for siblings = (action-map children parent)
+                    :do (assert siblings)
+                        (action-unmap siblings action)
+                    :when (empty-p siblings)
+                      :do (action-unmap children parent)
+                      :and :collect parent))
+            (forlorn-children
+              (loop :for child :in action-children
+                    :for spouses = (action-map parents child)
+                    :do (assert spouses)
+                        (action-unmap spouses action)
+                    :when (empty-p spouses)
+                      :do (action-unmap parents child)
+                      :and :collect child)))
+        (loop :for enabled-action :in enabled-parents
+            :for (e-o . e-c) = enabled-action
+            :do (if (needed-in-image-p e-o e-c)
+                    (enqueue starting-points enabled-action)
+                    (enqueue-in-front starting-points enabled-action)))
+        (values enabled-parents forlorn-children)))))
 
 (defmethod plan-record-dependency ((plan parallel-plan) (o operation) (c component))
   (with-slots (children parents visiting-action-list) plan
@@ -269,13 +279,17 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defmethod (setf plan-action-status) :after
     (new-status (p parallel-plan) (o operation) (c component))
+  (when (and (action-done-p new-status) (not (action-planned-p new-status)))
+    (mark-as-done p o c))
   (when (action-planned-p new-status)
     (let ((action (cons o c)))
       (vector-push-extend action (plan-all-actions p))
       (unless (action-map (plan-children p) action)
         (enqueue (plan-starting-points p) action)))))
 
-(defun make-parallel-plan (operation component &rest keys &key &allow-other-keys)
+(defgeneric* (make-parallel-plan) (operation component &key &allow-other-keys))
+(define-convenience-action-methods make-parallel-plan (o c &key))
+(defmethod make-parallel-plan ((operation operation) (component component) &rest keys &key &allow-other-keys)
   (let ((plan (apply 'make-instance 'parallel-plan
                      :system (component-system component) keys)))
     (traverse-action plan operation component t)
@@ -311,11 +325,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric serialize-plan (plan))
 (defmethod serialize-plan ((plan list)) plan)
 (defmethod serialize-plan ((plan parallel-plan))
-  (with-slots (all-actions visited-nodes) plan
+  (with-slots (all-actions visited-actions) plan
     (loop :for action :in (reverse (coerce all-actions 'list))
           :for (o . c) = action
-          :for (nil done-p nil) = (action-map visited-nodes action)
-          :unless done-p :collect action)))
+          :for status = (plan-action-status plan o c)
+          :when (action-planned-p status) :collect action)))
 
 (defgeneric check-invariants (object))
 
@@ -326,8 +340,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
       (with-queue (action action-queue starting-points)
         (collect action)
         (destructuring-bind (operation . component) action
-          (enqueue-many action-queue
-                        (mark-as-done operation component parents children))))
+          (mark-as-done plan operation component)))
       (unless (empty-p children)
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
@@ -717,63 +730,54 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (return-from perform-plan (perform-plan (serialize-plan plan))))
   (with-slots ((action-queue starting-points) children parents planned-output-action-count) plan
     (let ((all-deferred-warnings nil)
-          (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10))))
-          (*package* *package*)
-          (*readtable* *readtable*))
-      (with-compilation-unit ()
-        (doqueue/forking
-            (action-queue ;; variable for each action, queue object
-             :variables (:item action :backgroundp backgroundp :result result :condition condition)
-             :background-p (destructuring-bind (o . c) action
-                             (not (or (needed-in-image-p o c)
-                                      (action-already-done-p plan o c))))
-             :announce
-             (destructuring-bind (o . c) action
-               (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                       (action-already-done-p plan o c) (operation-description o c) backgroundp))
-             :result-file
-             (destructuring-bind (o . c) action (action-result-file o c))
-             ;; How we cleanup in the foreground after an action is run
-             :cleanup
-             (destructuring-bind (o . c) action
-               (cond
-                 (condition
-                  (finish-outputs)
-                  (warn "Failed ~A~:[~; in the background~]. Retrying~:*~:[~; in the foreground~]."
-                        (operation-description o c) backgroundp)
-                  (finish-outputs)
-                  (perform-with-restarts o c))
-                 (t
-                  (mark-operation-done o c)
-                  (destructuring-bind (&key deferred-warnings &allow-other-keys) result
-                    (when deferred-warnings
-                      (push deferred-warnings all-deferred-warnings)))))
-               (when backgroundp
-                 (decf planned-output-action-count)
-                 (format t "~&[~vd to go] Done ~A~%"
-                         ltogo planned-output-action-count (operation-description o c))
-                 (finish-outputs))
-               (loop :for enabled-action :in (mark-as-done o c parents children)
-                     :for (e-o . e-c) = enabled-action
-                     :do (if (needed-in-image-p e-o e-c)
-                             (enqueue action-queue enabled-action)
-                             (enqueue-in-front action-queue enabled-action)))))
-          ;; What we do in each forked process
-          (destructuring-bind (o . c) action
-            (cond
-              (backgroundp
-               (perform o c)
-               `(:deferred-warnings ,(reify-deferred-warnings)))
-              ((action-already-done-p plan o c)
-               nil)
-              (t
-               (perform-with-restarts o c)
-               nil))))
-        (mapc #'unreify-deferred-warnings all-deferred-warnings)
-        (assert (and (empty-p action-queue) (empty-p children))
-                (parents children)
-                "Problem with the dependency graph: ~A"
-                (summarize-plan plan))))))
+          (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10)))))
+      (doqueue/forking
+          (action-queue ;; variable for each action, queue object
+           :variables (:item action :backgroundp backgroundp :result result :condition condition)
+           :background-p (destructuring-bind (o . c) action
+                           (not (or (needed-in-image-p o c)
+                                    (action-already-done-p plan o c))))
+           :announce
+           (destructuring-bind (o . c) action
+             (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
+                     (action-already-done-p plan o c) (operation-description o c) backgroundp))
+           :result-file
+           (destructuring-bind (o . c) action (action-result-file o c))
+           ;; How we cleanup in the foreground after an action is run
+           :cleanup
+           (destructuring-bind (o . c) action
+             (cond
+               (condition
+                (finish-outputs)
+                (warn "Failed ~A~:[~; in the background~]. Retrying~:*~:[~; in the foreground~]."
+                      (operation-description o c) backgroundp)
+                (finish-outputs)
+                (perform-with-restarts o c))
+               (t
+                (mark-operation-done o c)
+                (destructuring-bind (&key &allow-other-keys) result)))
+             (when backgroundp
+               (decf planned-output-action-count)
+               (format t "~&[~vd to go] Done ~A~%"
+                       ltogo planned-output-action-count (operation-description o c))
+               (finish-outputs))
+             (mark-as-done plan o c)))
+        ;; What we do in each forked process
+        (destructuring-bind (o . c) action
+          (cond
+            (backgroundp
+             (perform o c)
+             `(:deferred-warnings ,(reify-deferred-warnings)))
+            ((action-already-done-p plan o c)
+             nil)
+            (t
+             (perform-with-restarts o c)
+             nil))))
+      (mapc #'unreify-deferred-warnings all-deferred-warnings)
+      (assert (and (empty-p action-queue) (empty-p children))
+              (parents children)
+              "Problem with the dependency graph: ~A"
+              (summarize-plan plan)))))
 
 ;;; Breadcrumbs: feature to replay otherwise non-deterministic builds
 (defvar *breadcrumb-stream* nil
@@ -812,12 +816,12 @@ debug them later.")
 (defmacro recording-breadcrumbs ((pathname record-p) &body body)
   `(call-recording-breadcrumbs ,pathname ,record-p (lambda () ,@body)))
 
-(defmethod operate :before (operation system &rest keys &key
+(defmethod operate :before ((operation operation) system &key
                             (breadcrumbs-to nil record-breadcrumbs-p)
                             ((:using-breadcrumbs-from breadcrumb-input-pathname)
                              (make-broadcast-stream) read-breadcrumbs-p)
                             &allow-other-keys)
-  (declare (ignorable system keys))
+  (declare (ignorable system))
   (recording-breadcrumbs (breadcrumbs-to record-breadcrumbs-p)
     (when read-breadcrumbs-p
       (perform-plan (read-breadcrumbs-from operation breadcrumb-input-pathname)))))
