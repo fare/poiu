@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.7")
-(defparameter *asdf-version-required-by-poiu* "2.26.150"))
+(defparameter *poiu-version* "1.29.8")
+(defparameter *asdf-version-required-by-poiu* "2.26.172"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -22,7 +22,7 @@ POIU may speed up compilation by utilizing all CPUs of an SMP machine.
 POIU may also reduce the memory pressure on the main (loading) process.
 POIU will enforce separation between compile- and load- time environments,
 helping you detect when :LOAD-TOPLEVEL is missing in EVAL-WHEN's
-(as needed for incremental compilation even with vanilla ASDF).
+as needed for incremental compilation even with vanilla ASDF.
 POIU will also catch *some* missing dependencies as exist between the
 files that it will happen to compile in parallel (but may not catch all
 dependencies that may otherwise be missing from your system).
@@ -34,23 +34,30 @@ with a chance to debug the issue and restart the operation.
 POIU was currently only made to work with SBCL, CCL and CLISP.
 Porting to another Lisp implementation that supports ASDF
 should not be difficult. [Note: the CLISP port is somewhat less stable.]
+When unable to fork because the implementation is unsupported,
+or because multiple threads are currently in use,
+POIU will fall back to compiling everything in the main process.
 
 Warning to CCL users: you need to save a CCL image that doesn't start threads
 at startup in order to use POIU (or anything that uses fork).
 Watch QITAB for a package that does just that: SINGLE-THREADED-CCL.
 
 To use POIU, (1) make sure asdf.lisp is loaded.
-We require a recent enough ASDF 2; see specific requirement above.
+We require a recent enough ASDF 3; see specific requirement above.
 Usually, you can
 	(require "asdf")
+to load ASDF 2, then
+	(asdf:load-system "asdf")
+to upgrade to ASDF 3.
 (2) configure ASDF's SOURCE-REGISTRY or its *CENTRAL-REGISTRY*, then load POIU.
 	(require "poiu")
 might work on SBCL and CCL. On CLISP, you can definitely
 	(asdf:load-system :poiu)
 (alternatively, you might manually (load "/path/to/poiu"),
 but you might as well test your configuration of ASDF).
-(3) Actually use POIU, with such commands as
-	(asdf:parallel-load-system :your-system)
+(3) POIU is active by default. You can just
+	(asdf:load-system :your-system)
+and POIU will be used to compile it.
 Once again, you may want to first use asdf-dependency-grovel to minimize
 the dependencies in your system.
 
@@ -110,7 +117,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric enqueue (queue value))
 (defgeneric enqueue-new (queue value &key test test-not))
 (defgeneric enqueue-in-front (queue value))
-(defgeneric empty-p (queue))
 (defgeneric dequeue (queue))
 (defgeneric enqueue-many (queue list))
 (defgeneric queue-contents (queue))
@@ -192,9 +198,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 
 (defmethod print-object ((plan parallel-plan) stream)
-  (print-unreadable-object (plan stream :type t :identity nil)
+  (print-unreadable-object (plan stream :type t :identity t)
     (with-safe-io-syntax (:package :asdf)
-      (pprint (summarize-plan plan) stream))))
+      (format stream "~A" (coerce-name (plan-system plan)))
+      #|(pprint (summarize-plan plan) stream)|#)))
 
 (defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
   (with-slots (starting-points children) plan
@@ -266,7 +273,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                       :and :collect child)))
         (loop :for enabled-action :in enabled-parents
             :for (e-o . e-c) = enabled-action
-            :do (if (needed-in-image-p e-o e-c)
+            :do (if (and (needed-in-image-p e-o e-c) (not (action-already-done-p plan e-o e-c)))
                     (enqueue starting-points enabled-action)
                     (enqueue-in-front starting-points enabled-action)))
         (values enabled-parents forlorn-children)))))
@@ -277,14 +284,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
           (parent (first visiting-action-list)))
       (record-dependency parent action parents children))))
 
-(defmethod (setf plan-action-status) :after
+(defmethod (setf plan-action-status) :before
     (new-status (p parallel-plan) (o operation) (c component))
-  (when (and (action-done-p new-status) (not (action-planned-p new-status)))
-    (mark-as-done p o c))
-  (when (action-planned-p new-status)
+  (format t "spasa ~S ~S ~S ~S~%" o c new-status (gethash (node-for o c) (asdf/plan::plan-visited-actions p)))
+  (unless (gethash (node-for o c) (asdf/plan::plan-visited-actions p))
     (let ((action (cons o c)))
       (vector-push-extend action (plan-all-actions p))
-      (unless (action-map (plan-children p) action)
+      (when (empty-p (action-map (plan-children p) action))
         (enqueue (plan-starting-points p) action)))))
 
 (defgeneric* (make-parallel-plan) (operation component &key &allow-other-keys))
