@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.10")
-(defparameter *asdf-version-required-by-poiu* "2.26.173"))
+(defparameter *poiu-version* "1.29.11")
+(defparameter *asdf-version-required-by-poiu* "2.26.174"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -97,13 +97,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #-(or clisp clozure sbcl)
   (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
-  (unless (or #+asdf3
-              (or (<= 3 (first (asdf/utility:parse-version (asdf:asdf-version))))
-                  (asdf:version-satisfies (asdf:asdf-version) *asdf-version-required-by-poiu*)))
+  (unless (or #+asdf3 (version<= (asdf:asdf-version) *asdf-version-required-by-poiu*))
     (error "POIU ~A requires ASDF ~A or later, but you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
-  #+clisp (ignore-errors (eval '(require "linux")))
+  #+clisp (ignore-errors (funcall 'require "linux"))
   #+sbcl (require :sb-posix)
   (export '(parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
@@ -286,7 +284,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defmethod (setf plan-action-status) :before
     (new-status (p parallel-plan) (o operation) (c component))
-  (format t "spasa ~S ~S ~S ~S~%" o c new-status (gethash (node-for o c) (asdf/plan::plan-visited-actions p)))
   (unless (gethash (node-for o c) (asdf/plan::plan-visited-actions p))
     (let ((action (cons o c)))
       (vector-push-extend action (plan-all-actions p))
