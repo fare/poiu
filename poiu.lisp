@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.9")
-(defparameter *asdf-version-required-by-poiu* "2.26.172"))
+(defparameter *poiu-version* "1.29.10")
+(defparameter *asdf-version-required-by-poiu* "2.26.173"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -746,7 +746,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            :announce
            (destructuring-bind (o . c) action
              (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                     (action-already-done-p plan o c) (action-description o c) backgroundp))
+                     (and (action-already-done-p plan o c) (not (needed-in-image-p o c)))
+                     (action-description o c) backgroundp))
            :result-file
            (destructuring-bind (o . c) action (action-result-file o c))
            ;; How we cleanup in the foreground after an action is run
@@ -774,7 +775,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             (backgroundp
              (perform o c)
              `(:deferred-warnings ,(reify-deferred-warnings)))
-            ((action-already-done-p plan o c)
+            ((and (action-already-done-p plan o c) (not (needed-in-image-p o c)))
              nil)
             (t
              (perform-with-restarts o c)
