@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.8")
+(defparameter *poiu-version* "1.29.9")
 (defparameter *asdf-version-required-by-poiu* "2.26.172"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -746,7 +746,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
            :announce
            (destructuring-bind (o . c) action
              (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                     (action-already-done-p plan o c) (operation-description o c) backgroundp))
+                     (action-already-done-p plan o c) (action-description o c) backgroundp))
            :result-file
            (destructuring-bind (o . c) action (action-result-file o c))
            ;; How we cleanup in the foreground after an action is run
@@ -756,7 +756,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                (condition
                 (finish-outputs)
                 (warn "Failed ~A~:[~; in the background~]. Retrying~:*~:[~; in the foreground~]."
-                      (operation-description o c) backgroundp)
+                      (action-description o c) backgroundp)
                 (finish-outputs)
                 (perform-with-restarts o c))
                (t
@@ -765,7 +765,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              (when backgroundp
                (decf planned-output-action-count)
                (format t "~&[~vd to go] Done ~A~%"
-                       ltogo planned-output-action-count (operation-description o c))
+                       ltogo planned-output-action-count (action-description o c))
                (finish-outputs))
              (mark-as-done plan o c)))
         ;; What we do in each forked process
