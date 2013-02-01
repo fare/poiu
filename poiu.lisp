@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.11")
+(defparameter *poiu-version* "1.29.12")
 (defparameter *asdf-version-required-by-poiu* "2.26.174"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -97,7 +97,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (eval-when (:compile-toplevel :load-toplevel :execute)
   #-(or clisp clozure sbcl)
   (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
-  (unless (or #+asdf3 (version<= (asdf:asdf-version) *asdf-version-required-by-poiu*))
+  (unless (or #+asdf3 (version<= *asdf-version-required-by-poiu* (asdf:asdf-version)))
     (error "POIU ~A requires ASDF ~A or later, but you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
@@ -284,7 +284,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defmethod (setf plan-action-status) :before
     (new-status (p parallel-plan) (o operation) (c component))
-  (unless (gethash (node-for o c) (asdf/plan::plan-visited-actions p))
+  (declare (ignorable new-status))
+  (unless (gethash (node-for o c) (asdf/plan::plan-visited-actions p)) ; already visited?
     (let ((action (cons o c)))
       (vector-push-extend action (plan-all-actions p))
       (when (empty-p (action-map (plan-children p) action))
