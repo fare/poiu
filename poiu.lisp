@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.12")
-(defparameter *asdf-version-required-by-poiu* "2.26.174"))
+(defparameter *poiu-version* "1.29.13")
+(defparameter *asdf-version-required-by-poiu* "2.31"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -95,8 +95,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 ;;; Check versions
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or clisp clozure sbcl)
-  (format *error-output* "POIU doesn't support your Lisp implementation (yet). Help port POIU!")
+  #-(or allegro clisp clozure sbcl)
+  (warn "POIU doesn't support forking on your Lisp implementation (yet). Help port POIU!")
   (unless (or #+asdf3 (version<= *asdf-version-required-by-poiu* (asdf:asdf-version)))
     (error "POIU ~A requires ASDF ~A or later, but you only have ~A loaded."
            *poiu-version*
@@ -375,8 +375,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 #+sbcl
 (progn
-(defun posix-exit (code)
-  (sb-posix:exit code))
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
 ;; Note: can possibly modify parameters and reset in sb-ext:*after-gc-hooks*
@@ -416,8 +414,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (progn
 (defun can-fork-p ()
   (null (cdr (ccl::all-processes))))
-(defun posix-exit (n)
-  (ccl:quit n))
 (defun posix-fork ()
   (unless (null (cdr (ccl:all-processes)))
     (error "Cannot fork: more than one active thread. Are you using single-threaded-ccl?"))
@@ -446,8 +442,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (progn
 (defun can-fork-p ()
   (and (find-symbol* 'wait "LINUX" nil) (find-symbol* 'fork "LINUX" nil) t))
-(defun posix-exit (n)
-  (ext:quit n))
 (defun posix-fork ()
   (funcall (find-symbol* 'fork "LINUX")))
 (defun posix-setpgrp ()
@@ -460,7 +454,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun posix-wait ()
   (handler-case
       (multiple-value-bind (pid status code) (funcall (find-symbol* 'wait "LINUX"))
-        (values (and pid (not (= pid -1))) (list pid status code)))
+        (values (unless (= pid -1) pid) (list pid status code)))
     ((and system::simple-os-error (satisfies no-child-process-condition-p)) ()
       (values nil nil))))
 (defun posix-wexitstatus (x)
@@ -482,10 +476,27 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 );clisp
 
-#-(or sbcl ccl clisp)
+#+allegro ;;; Allegro specific fork support
+(progn
+(defun can-fork-p ()
+  (null (cdr mp:*all-processes*)))
+(defun posix-fork ()
+  (excl.osi:fork))
+(defun posix-setpgrp ()
+  (excl.osi:setpgrp))
+(defun posix-wait (&key pid nowait)
+  (format t "~&~S: posix-wait :pid ~S :nowait ~S~%" (excl::getpid) pid nowait)
+  (multiple-value-bind (exit-status pid signal)
+      (sys:reap-os-subprocess :pid (or pid -1) :wait (not nowait))
+    (values pid (list exit-status signal))))
+(defun posix-wexitstatus (x)
+  (first x))
+(trace posix-fork posix-wait posix-wexitstatus sys:reap-os-subprocess)
+);allegro
+
+#-(or sbcl ccl clisp allegro)
 (progn
 (defun can-fork-p () nil)
-(defun posix-exit (n) nil)
 (defun posix-fork () nil)
 (defun posix-setpgrp () nil)
 (defun posix-wait () (values nil nil))
@@ -565,7 +576,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                 (ignore-errors (values (funcall function data t)))
               (process-return result-file result condition))
          (finish-outputs)
-         (posix-exit 0)))
+         (quit 0 nil)))
       (t ; in the parent
        (make-instance 'background-process
                       :pid pid

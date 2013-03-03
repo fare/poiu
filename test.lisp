@@ -1,10 +1,8 @@
 ":" ; : "-*- Lisp -*-" \
-; case "${1:-sbcl}" in (sbcl) : \
-; sbcl --load test.lisp
-;; (ccl) : \
-; ../single-threaded-ccl/stccl --load test.lisp
-;; (clisp) : \
-; clisp -i ../asdf/asdf.lisp -i test.lisp
+; case "${1:-sbcl}" in (sbcl) sbcl --load test.lisp \
+;; (allegro) alisp -L test.lisp \
+;; (ccl) ../single-threaded-ccl/stccl --load test.lisp \
+;; (clisp) clisp -i test.lisp \
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac 2>&1 | tee foo ; exit
 
@@ -15,9 +13,14 @@
       *compile-verbose* nil
       *compile-print* nil)
 
-(require "asdf")
+(ignore-errors (funcall 'require "asdf"))
+#-asdf2 (load "../asdf/build/asdf.lisp")
 
-(in-package :asdf)
+(asdf:load-system :asdf)
+
+(in-package :asdf) ;; in case there was a punt, be in the NEW asdf package.
+
+#+clisp (trace asdf::read-file-form asdf::read-file-forms)
 
 (pushnew :DBG *features*)
 (defmacro DBG (tag &rest exprs)
@@ -34,8 +37,6 @@ outputs a tag plus a list of source expressions and their resulting values, retu
          exprs)
       (apply 'values ,res)))))
 
-(load-system :asdf)
-
 (load-system :poiu :verbose t)
 
 (setf *load-verbose* t
@@ -45,15 +46,6 @@ outputs a tag plus a list of source expressions and their resulting values, retu
       *asdf-verbose* t)
 
 (format *error-output* "~&POIU ~A~%" *poiu-version*)
-
-(defun print-backtrace (out)
-  "Print a backtrace (implementation-defined)"
-  (declare (ignorable out))
-  #+clozure (let ((*debug-io* out))
-	      (ccl:print-call-history :count 100 :start-frame-number 1)
-	      (finish-output out))
-  #+sbcl
-  (sb-debug:backtrace most-positive-fixnum out))
 
 #+(or)
 (trace
@@ -68,16 +60,16 @@ outputs a tag plus a list of source expressions and their resulting values, retu
  ;; compile-file load
  operate call-recording-breadcrumbs perform-plan
 )
-;;#+clisp (trace posix-wexitstatus posix-wait)
+#+allegro (trace posix-fork posix-wexitstatus posix-wait excl::getpid quit)
 
-(defvar *fare* (asdf::user-homedir))
+(defvar *fare* (asdf/common-lisp:user-homedir-pathname))
 (defun subnamestring (base sub)
-  (namestring (asdf::subpathname base sub)))
+  (namestring (asdf/driver:subpathname base sub)))
 
 (block nil
   (handler-bind ((error #'(lambda (condition)
                             (format t "~&ERROR:~%~A~%" condition)
-                            (print-backtrace *standard-output*)
+                            (print-backtrace :stream *standard-output*)
                             (format t "~&ERROR:~%~A~%" condition)
                             (finish-output)
                             (return))))
@@ -85,11 +77,11 @@ outputs a tag plus a list of source expressions and their resulting values, retu
      :exscribe :verbose t
      :force :all
      :breadcrumbs-to "/tmp/breadcrumbs.text")
-    (funcall (asdf::find-symbol* :process-command-line :exscribe)
+    (funcall (asdf/package:find-symbol* :process-command-line :exscribe)
              `("-I" ,(subnamestring *fare* "fare/www/")
                "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
 
-(format t "~&~S~%" (asdf::implementation-identifier))
+(format t "~&~S~%" (asdf/os:implementation-identifier))
 (format t "~&Compiled with as many as ~D forked subprocesses~%" *max-actual-forks*)
 
-(asdf::posix-exit 0)
+(quit 0)
