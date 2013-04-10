@@ -3,9 +3,9 @@
 ;;;                                                                  ;;;
 ;;; Free Software, same MIT-style license as ASDF. See poiu.lisp.    ;;;
 ;;;                                                                  ;;;
-;;; Copyright (c) 2001 Daniel Barlow                                 ;;;
-;;; Copyright (c) 2008 ITA Software                                  ;;;
-;;; Copyright (c) 2011 Google, Inc.                                  ;;;
+;;; Copyright 2001 Daniel Barlow                                     ;;;
+;;; Copyright 2007 ITA Software, Inc. All rights reserved.           ;;;
+;;; Copyright 2011 Google, Inc. All rights reserved.                 ;;;
 ;;;                                                                  ;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

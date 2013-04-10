@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.13")
-(defparameter *asdf-version-required-by-poiu* "2.31"))
+(defparameter *poiu-version* "1.29.14")
+(defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -66,7 +66,7 @@ as part of an experiment funded by ITA Software, Inc.
 It was subsequently modified by Francois-Rene Rideau at ITA Software, who
 adapted POIU for use with XCVB in 2009, wrote the CCL and CLISP ports,
 moved code from POIU to ASDF, and
-rewrote both of them together in a simpler way.
+eventually rewrote both of them together in a simpler way.
 The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 ;;; ASDF is
@@ -110,6 +110,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defgeneric table-values (table))
 (defgeneric table-keys (table))
 (defgeneric empty-p (collection))
+
 (defgeneric queue-tail (queue))
 (defgeneric (setf queue-tail) (new-tail queue))
 (defgeneric enqueue (queue value))
@@ -738,7 +739,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
      (make-pathname :name (format nil "~A.ASDF-~A" (file-namestring p) (type-of o))
                     :type "process-result" :defaults p))))
 
-(defmethod perform-plan ((plan parallel-plan) &key)
+(defun action-effectively-done-p (plan operation component &key force)
+  (or (action-already-done-p plan operation component)
+      (and (not force) (nth-value 1 (compute-action-stamp nil operation component)))))
+
+(defmethod perform-plan ((plan parallel-plan) &key force &allow-other-keys)
   (unless (can-fork-p)
     (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
           #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
@@ -750,12 +755,12 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
           (action-queue ;; variable for each action, queue object
            :variables (:item action :backgroundp backgroundp :result result :condition condition)
            :background-p (destructuring-bind (o . c) action
-                           (not (or (needed-in-image-p o c)
-                                    (action-already-done-p plan o c))))
+                           (not (or (needed-in-image-p o c) (action-effectively-done-p plan o c :force force))))
            :announce
            (destructuring-bind (o . c) action
              (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                     (and (action-already-done-p plan o c) (not (needed-in-image-p o c)))
+                     (and (action-effectively-done-p plan o c :force force)
+                          (not (needed-in-image-p o c)))
                      (action-description o c) backgroundp))
            :result-file
            (destructuring-bind (o . c) action (action-result-file o c))
@@ -784,7 +789,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
             (backgroundp
              (perform o c)
              `(:deferred-warnings ,(reify-deferred-warnings)))
-            ((and (action-already-done-p plan o c) (not (needed-in-image-p o c)))
+            ((and (or (action-already-done-p plan o c)
+                      (action-already-done-p nil o c))
+                  (not (needed-in-image-p o c)))
              nil)
             (t
              (perform-with-restarts o c)

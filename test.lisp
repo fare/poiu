@@ -6,6 +6,9 @@
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac 2>&1 | tee foo ; exit
 
+;;; TODO: have a deterministic variant that maximizes in-image then out-image actions.
+;;; i.e. maintain two queues, for in-image and out-image; exhaust one, then the other.
+
 (in-package :cl-user)
 
 (setf *load-verbose* nil
