@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30")
+(defparameter *poiu-version* "1.30.1")
 (defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -95,14 +95,14 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 ;;; Check versions
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  #-(or allegro clisp clozure sbcl)
+  #-(and unix (or allegro clisp clozure sbcl))
   (warn "POIU doesn't support forking on your Lisp implementation (yet). Help port POIU!")
   (unless (or #+asdf3 (version<= *asdf-version-required-by-poiu* (asdf:asdf-version)))
     (error "POIU ~A requires ASDF ~A or later, but you only have ~A loaded."
            *poiu-version*
            *asdf-version-required-by-poiu* (asdf:asdf-version)))
-  #+clisp (ignore-errors (funcall 'require "linux"))
-  #+sbcl (require :sb-posix)
+  #+(and unix clisp) (ignore-errors (funcall 'require "linux"))
+  #+(and unix sbcl) (require :sb-posix)
   (export '(parallel-load-system parallel-compile-system))
   (pushnew :poiu *features*))
 
@@ -380,13 +380,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   ;; But this work-around makes it is safe to call run-program before to invoke poiu
   ;; (it is of course safe after). The true fix to allow run-program to be invoked
   ;; at load-time would be to have an API for a process-waiting callbacks.
-  #+sbcl
+  #+(and sbcl unix)
   (sb-sys:default-interrupt sb-unix:sigchld)) ; ignore-interrupt is undefined for SIGCHLD.
 
 (defparameter *max-forks* 16) ; limit how parallel we will try to be.
 (defparameter *max-actual-forks* nil) ; record how parallel we actually went.
 
-#+sbcl
+#+(and sbcl unix)
 (progn
 ;; Simple heuristic: if we have allocated more than the given ratio
 ;; of what is allowed between GCs, then trigger the GC.
@@ -430,7 +430,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 );sbcl
 
-#+clozure
+#+(and clozure unix)
 (progn
 (defun can-fork-p ()
   (null (cdr (ccl::all-processes))))
@@ -469,11 +469,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 );clozure
 
-#+clisp ;;; CLISP specific fork support
-;; DISABLED UNTIL WAITPID IS IMPLEMENTED.
+#+(and clisp unix) ;;; CLISP specific fork support
 (progn
 (defun can-fork-p ()
-  (and (find-symbol* 'waitpid "LINUX" nil) (find-symbol* 'fork "LINUX" nil) t nil))
+  (and (find-symbol* 'wait "POSIX" nil) (find-symbol* 'fork "LINUX" nil) t nil))
 (defun posix-fork ()
   (funcall (find-symbol* 'fork "LINUX")))
 (defun posix-setpgrp ()
@@ -487,7 +486,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun posix-waitpid (pid &key nohang untraced continued)
   (handler-case
       (multiple-value-bind (pid status code)
-          (symbol-call "LINUX" 'waitpid pid)
+          (symbol-call "POSIX" 'wait :pid pid :nohang nohang :untraced untraced :continued continued)
         (case pid
           (0 (values 0 ()))
           (-1 (values -1 :error))
@@ -513,7 +512,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 |#
 );clisp
 
-#+allegro ;;; Allegro specific fork support
+#+(and allegro unix) ;;; Allegro specific fork support
 (progn
 (defun can-fork-p ()
   (null (cdr mp:*all-processes*)))
@@ -529,10 +528,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (values pid (list exit-status signal))))
 (defun posix-wexitstatus (x)
   (first x))
-(trace posix-fork posix-waitpid posix-wexitstatus sys:reap-os-subprocess)
 );allegro
 
-#-(or sbcl ccl clisp allegro)
+#-(or (and allegro unix) (and clisp linux) (and clozure unix) (and sbcl unix))
 (progn
 (defun can-fork-p () nil)
 (defun posix-fork () nil)

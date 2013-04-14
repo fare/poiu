@@ -1,0 +1,24 @@
+POIU: Parallel Operator on Independent Units
+============================================
+
+POIU is an ASDF extension that will parallelize your Common Lisp builds,
+for some build speedup.
+
+Just make sure you use ASDF 2.32 or later, and include
+	(asdf:load-system :poiu)
+in your build scripts before you build the rest of your software.
+It will hook into asdf::*default-plan-class* and
+become the default backend for ASDF.
+
+You can get the original behavior of ASDF either
+by resetting the default plan class with
+	(setf asdf::*default-plan-class* 'asdf/plan:sequential-plan)
+or by calling asdf:operate or asdf:load-system with
+	(asdf:operate 'asdf:load-op :my-system :class asdf/plan:sequential-plan)
+
+The official web pages for POIU are:
+    http://common-lisp.net/project/qitab/
+    http://cliki.net/poiu
+
+POIU depends on the new plan-making internals of ASDF 3
+as well as on ASDF 3's new UIOP library.
