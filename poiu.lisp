@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.29.14")
+(defparameter *poiu-version* "1.30")
 (defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -129,6 +129,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (loop :for val :being :the :hash-values :of table :collect val))
 (defmethod table-keys ((table hash-table))
   (loop :for key :being :the :hash-keys :of table :collect key))
+(defmethod size ((table hash-table))
+  (hash-table-count table))
 (defmethod empty-p ((table hash-table))
   (zerop (hash-table-count table)))
 
@@ -176,13 +178,24 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defmacro with-queue ((var qvar &optional (qval '(simple-queue))) &body body)
   `(let ((,qvar ,qval)) (call-with-queue (lambda (,var) ,@body) ,qvar)))
 
+(defvar *parallel-plan-deterministic-p* t) ;; Use the deterministic build by default.
+
 (defclass parallel-plan (plan-traversal)
-  ((starting-points :initform (simple-queue) :reader plan-starting-points)
-   (children :initform (make-hash-table :test #'equal) :reader plan-children
-            :documentation "map an action to a (hash)set of \"children\" that it depends on")
-   (parents :initform (make-hash-table :test #'equal) :reader plan-parents
-            :documentation "map an action to a (hash)set of \"parents\" that depend on it")
-   (all-actions :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)))
+  ((starting-points
+    :initform (simple-queue) :reader plan-starting-points
+    :documentation "a queue of actions with no dependencies")
+   (children
+    :initform (make-hash-table :test #'equal) :reader plan-children
+    :documentation "map an action to a (hash)set of \"children\" that it depends on")
+   (parents
+    :initform (make-hash-table :test #'equal) :reader plan-parents
+    :documentation "map an action to a (hash)set of \"parents\" that depend on it")
+   (all-actions
+    :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)
+   (deterministic-p
+    :initform *parallel-plan-deterministic-p* :initarg :deterministic-p
+    :type boolean :reader plan-deterministic-p
+    :documentation "is this plan supposed to be executed in deterministic way?")))
 
 (defun parallel-operate (operation system &rest keys)
   (apply 'operate operation system :plan-class 'parallel-plan keys))
@@ -194,7 +207,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (apply 'build-system system :plan-class 'parallel-plan args))
 (defun parallel-test-system (system &rest args)
   (apply 'test-system system :plan-class 'parallel-plan args))
-
 
 (defmethod print-object ((plan parallel-plan) stream)
   (print-unreadable-object (plan stream :type t :identity t)
@@ -395,8 +407,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (sb-posix:fork))
 (defun posix-setpgrp ()
   (sb-posix:setpgrp))
-(defun posix-wait ()
-  (sb-posix:wait))
+(defconstant +echild+ sb-posix:echild)
+(defun posix-waitpid (pid &key nohang untraced)
+  (handler-case
+      (sb-posix:waitpid
+       (or pid -1)
+       (logior (if nohang sb-posix:wnohang 0)
+               (if untraced sb-posix:wuntraced 0)))
+    (sb-posix:syscall-error (c)
+      (values -1 (sb-posix:syscall-errno c)))))
 (defun posix-wexitstatus (x)
   (sb-posix:wexitstatus x))
 #|
@@ -404,9 +423,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (sb-posix:close x))
 (defun posix-pipe ()
   (sb-posix:pipe))
-(defun make-output-stream (fd)
+(defun fd-output-stream (fd)
   (sb-sys:make-fd-stream fd :output t))
-(defun make-input-stream (fd)
+(defun fd-input-stream (fd)
   (sb-sys:make-fd-stream fd :input t))
 |#
 );sbcl
@@ -421,10 +440,21 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (ccl:external-call "fork" :int))
 (defun posix-setpgrp ()
   (ccl::external-call "setpgrp" :int))
-(defun posix-wait ()
+(defconstant +echild+ #.(read-from-string "#$ECHILD"))
+(defun posix-waitpid (pid &key nohang untraced continued)
   (ccl::rlet ((status :signed))
-    (let* ((retval (ccl::external-call "wait" :address status :signed)))
-      (values retval (ccl::pref status :signed)))))
+    (let ((retval (ccl::external-call
+                   "waitpid"
+                   :integer (or pid -1)
+                   :address status
+                   :integer (logior (if nohang #.(read-from-string "#$WNOHANG") 0)
+                                    (if untraced #.(read-from-string "#$WUNTRACED") 0)
+                                    (if continued #.(read-from-string "#$WCONTINUED") 0))
+                   :signed)))
+      (case retval
+        (0 (values 0 ()))
+        (-1 (values -1 (ccl::%get-errno)))
+        (t (values retval (ccl::pref status :signed)))))))
 (defun posix-wexitstatus (x)
   (ccl::wexitstatus x))
 #|
@@ -432,17 +462,18 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (ccl::fd-close x))
 (defun posix-pipe ()
   (ccl::pipe))
-(defun make-output-stream (fd)
+(defun fd-output-stream (fd)
   (ccl::make-fd-stream fd :direction :output))
-(defun make-input-stream (fd)
+(defun fd-input-stream (fd)
   (ccl::make-fd-stream fd :direction :input))
 |#
 );clozure
 
 #+clisp ;;; CLISP specific fork support
+;; DISABLED UNTIL WAITPID IS IMPLEMENTED.
 (progn
 (defun can-fork-p ()
-  (and (find-symbol* 'wait "LINUX" nil) (find-symbol* 'fork "LINUX" nil) t))
+  (and (find-symbol* 'waitpid "LINUX" nil) (find-symbol* 'fork "LINUX" nil) t nil))
 (defun posix-fork ()
   (funcall (find-symbol* 'fork "LINUX")))
 (defun posix-setpgrp ()
@@ -452,12 +483,17 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
        (equal (simple-condition-format-control c)
                   "UNIX error ~S (ECHILD): No child processes
 ")))
-(defun posix-wait ()
+(defconstant +echild+ :echild)
+(defun posix-waitpid (pid &key nohang untraced continued)
   (handler-case
-      (multiple-value-bind (pid status code) (funcall (find-symbol* 'wait "LINUX"))
-        (values (unless (= pid -1) pid) (list pid status code)))
+      (multiple-value-bind (pid status code)
+          (symbol-call "LINUX" 'waitpid pid)
+        (case pid
+          (0 (values 0 ()))
+          (-1 (values -1 :error))
+          (t (values pid (list pid status code)))))
     ((and system::simple-os-error (satisfies no-child-process-condition-p)) ()
-      (values nil nil))))
+      (values -1 +echild+))))
 (defun posix-wexitstatus (x)
   (if (eq :exited (second x))
     (third x)
@@ -470,9 +506,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (unless (zerop code)
       (error "couldn't make pipes"))
     (values (aref p 0) (aref p 1))))
-(defun make-output-stream (fd)
+(defun fd-output-stream (fd)
   (ext:make-stream fd :direction :output))
-(defun make-input-stream (fd)
+(defun fd-input-stream (fd)
   (ext:make-stream fd :direction :input))
 |#
 );clisp
@@ -485,14 +521,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (excl.osi:fork))
 (defun posix-setpgrp ()
   (excl.osi:setpgrp))
-(defun posix-wait (&key pid nowait)
-  (format t "~&~S: posix-wait :pid ~S :nowait ~S~%" (excl::getpid) pid nowait)
+(defconstant +echild+ excl::*echild*)
+(defun posix-waitpid (pid &key nohang)
+  (format t "~&~S: posix-waitpid :pid ~S :nowait ~S~%" (excl::getpid) pid nohang)
   (multiple-value-bind (exit-status pid signal)
-      (sys:reap-os-subprocess :pid (or pid -1) :wait (not nowait))
+      (sys:reap-os-subprocess :pid (or pid -1) :wait (not nohang))
     (values pid (list exit-status signal))))
 (defun posix-wexitstatus (x)
   (first x))
-(trace posix-fork posix-wait posix-wexitstatus sys:reap-os-subprocess)
+(trace posix-fork posix-waitpid posix-wexitstatus sys:reap-os-subprocess)
 );allegro
 
 #-(or sbcl ccl clisp allegro)
@@ -500,9 +537,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun can-fork-p () nil)
 (defun posix-fork () nil)
 (defun posix-setpgrp () nil)
-(defun posix-wait () (values nil nil))
+(defun posix-waitpid (pid &key &allow-other-keys) (values -1 :einval))
 (defun posix-wexitstatus (x) x)
-);unsupported implemenetations
+);unsupported implementations
 
 ;;; Timing the build process
 
@@ -585,152 +622,96 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                       :cleanup cleanup
                       :data data)))))
 
-(defun call-queue/forking (fun queue
-			   &key announce cleanup result-file (background-p (constantly t)))
+(defun call-queue/forking (fun fg-queue bg-queue
+			   &key announce cleanup result-file deterministic-order)
   ;; assumes a single-threaded parent process
   (declare (optimize debug))
   (let ((processes (make-hash-table :test 'equal)))
-    (loop
-      (cond
-        (;; nothing to do or wait for anymore.
-         (and (empty-p queue) (empty-p processes))
-         (return))
-        (;; we've exceeded the subprocess limit. Wait for a few before continuing.
-         (or (>= (hash-table-count processes) *max-forks*)
-             (empty-p queue))
-         (disable-other-waiters)
-         (multiple-value-bind (pid status)
-             (timed-do (*time-spent-waiting*) (posix-wait))
-           (flet ((cleanup (process status)
-                    (multiple-value-bind (result condition)
-                        (process-result process status)
-                      (funcall (process-cleanup process) (process-data process) result condition t))))
-             (if pid
-                 (let ((process (gethash pid processes)))
-                   (assert process () "couln't find the pid ~A in processes ~S" pid (table-values processes))
-                   (remhash pid processes)
-                   (cleanup process status))
-                 ;; clisp can currently drop signals and get a ENOCHILD...
-                 (let ((missed (table-values processes)))
-                   (warn "No child left: we must have dropped a signal!")
-                       ;;;(warn "blah ~S" entries) ;XXX
-                   (clrhash processes)
-                   (dolist (process missed)
-                     (cleanup process nil)))))))
-        (t ;; dequeue an item
-         (let* ((item (dequeue queue))
-                (backgroundp (funcall background-p item)))
-           (funcall announce item backgroundp)
-           (cond
-             (backgroundp
-              (latest-stamp-f *max-actual-forks* (hash-table-count processes))
-              (let ((process (make-background-process item fun cleanup (funcall result-file item))))
-                (setf (gethash (process-pid process) processes) process)))
-             (t
-              (multiple-value-bind (result condition)
-                  (ignore-errors (values (funcall fun item nil)))
-                (funcall cleanup item result condition nil))))))))
-    (assert (and (empty-p queue) (empty-p processes)) ()
-            "List of processes or list of things to do isn't empty: ~S / ~S~%"
-            (queue-contents queue)
-            (table-values processes))))
+    (labels
+        ((fg-perform (action)
+           (funcall announce action nil)
+           (multiple-value-bind (result condition)
+               (ignore-errors (values (funcall fun action nil)))
+             (funcall cleanup action result condition nil)))
+         (cleanup-one (process status)
+           (multiple-value-bind (result condition)
+               (process-result process status)
+             (funcall (process-cleanup process)
+                      (process-data process) result condition t)))
+         (reap (&key wait)
+           (disable-other-waiters)
+           (multiple-value-bind (pid status)
+               (timed-do (*time-spent-waiting*) (posix-waitpid -1 :nohang (not wait)))
+             (etypecase pid
+               ((eql 0) ;; no process ended and nohang? Just return NIL.
+                nil)
+               ((integer 1 *) ;; some process ended? reap it!
+                (let ((process (gethash pid processes)))
+                  (assert process () "couln't find the pid ~A in processes ~S" pid (table-values processes))
+                  (remhash pid processes)
+                  (cleanup-one process status))
+                t)
+               ((eql -1) ;; error?
+                (assert (eql status +echild+) (status))
+                ;; we were waiting for some process(es),
+                ;; but the OS says everything was already reaped?
+                ;; Our implementation or some library may have disabled the SIGCHLD signal
+                ;; or preempted our wait. Mark all processes as completed.
+                (let ((missed (table-values processes)))
+                  (warn "No child left: we must have dropped a signal!")
+                  (clrhash processes)
+                  (dolist (process missed)
+                    (cleanup-one process nil)))
+                t)))))
+      (loop
+        (let* ((no-fg-item? (empty-p fg-queue))
+               (fg-item? (not no-fg-item?))
+               (no-bg-item? (empty-p bg-queue))
+               (bg-item? (not no-bg-item?))
+               (no-processes? (empty-p processes))
+               (processes? (not no-processes?))
+               (no-bg-workers? (>= (size processes) *max-forks*))
+               (bg-workers? (not no-bg-workers?))
+               (work-to-fork? (and bg-item? bg-workers?)))
+          (cond
+            (;; Opportunistically reap any completed background process with no wait;
+             ;; wait and reap if nothing else to do.
+             (and processes?
+                  (reap :wait (and (not work-to-fork?)
+                                   (or no-fg-item? deterministic-order)))))
+            (;; Can run stuff in the background? Keep those CPUs busy!
+             work-to-fork?
+             (let ((item (dequeue bg-queue)))
+               (funcall announce item t)
+               (let ((process (make-background-process item fun cleanup (funcall result-file item))))
+                 (setf (gethash (process-pid process) processes) process)
+                 (latest-stamp-f *max-actual-forks* (size processes)))))
+            (;; foreground actions in non-deterministic mode? Opportunistically run one
+             (and fg-item? (not deterministic-order))
+             (fg-perform (dequeue fg-queue)))
+            (;; foreground actions in deterministic mode after exhausting background actions?
+             ;; run them all in traversal order
+             (and fg-item? deterministic-order no-processes? no-bg-item?)
+             (map () #'fg-perform (sort (dequeue-all fg-queue) #'< :key deterministic-order)))
+            (;; Nothing to do or wait for anymore? done!
+             (and no-fg-item? no-bg-item? no-processes?)
+             (return))
+            (t
+             (assert nil (bg-queue fg-queue processes)))))))))
 
-(defmacro doqueue/forking ((queue &key variables
-                                    (background-p t) (announce nil) (cleanup nil) result-file)
+(defmacro doqueue/forking ((fg-queue bg-queue
+                            &key variables deterministic-order
+                              (announce nil) (cleanup nil) result-file)
                            &body body)
-  (destructuring-bind (&key item (backgroundp (gensym "BACKGROUNDP")) result condition) variables
+  (destructuring-bind (&key item backgroundp result condition) variables
     `(call-queue/forking
       #'(lambda (,item ,backgroundp) (declare (ignorable ,item ,backgroundp)) ,@body)
-      ,queue
+      ,fg-queue ,bg-queue
+      :deterministic-order ,deterministic-order
       :result-file #'(lambda (,item) (declare (ignorable ,item)) ,result-file)
-      :background-p #'(lambda (,item) (declare (ignorable ,item)) ,background-p)
       :announce #'(lambda (,item ,backgroundp) (declare (ignorable ,item ,backgroundp)) ,announce)
       :cleanup #'(lambda (,item ,result ,condition ,backgroundp)
                    (declare (ignorable ,item ,result ,condition ,backgroundp)) ,cleanup))))
-
-#|
-;;; Vague attempt at doing things with threads.
-;;; BUT, compilation takes a global lock in CCL, so it's no go.
-
-(defclass communicating-thread ()
-  ((thread :initarg :thread :accessor process-thread)
-   (data :initarg :data :accessor process-data)
-   (cleanup :initarg :cleanup :accessor process-cleanup)
-   (lock :initform (ccl:make-lock) :accessor process-lock)
-   (status :initform () :accessor process-status)))
-
-#+clozure
-(defparameter *null-stream*
-  (open "/dev/null" :direction :io :if-does-not-exist :error :if-exists :append))
-
-#+clozure
-(defun make-communicating-thread (semaphore data continuation cleanup)
-  (let* ((proc (make-instance 'communicating-thread
-                 :cleanup cleanup
-                 :data data))
-         (thread (ccl::process-run-function
-                  "worker"
-                  (lambda ()
-                    (handler-case
-                        (let ((*standard-input* *null-stream*))
-                          (catch :process-return
-                            (funcall continuation data)))
-                      (t (c)
-                        (declare (ignore c))
-                        (ccl::with-lock-grabbed ((process-lock proc))
-                          (setf (process-status proc) '(1))))
-                      (:no-error (&rest r)
-                        (ccl::with-lock-grabbed ((process-lock proc))
-                          (setf (process-status proc) (cons 0 r)))))
-                    (ccl::signal-semaphore semaphore)))))
-    (setf (process-thread proc) thread)
-    proc))
-
-#+clozure
-(defun process-complete-p (proc)
-  (ccl::with-lock-grabbed ((process-lock proc))
-    (process-status proc)))
-
-#+clozure
-(defun thread-result (proc)
-  (second (process-status proc)))
-
-#+clozure
-(defun call-queue/threading (thunk queue &key cleanup (background-p (constantly t)))
-  ;; will use threads instead of fork
-  (declare (optimize debug))
-  (let ((elem nil)
-        (processes (make-hash-table :test 'equal))
-        (pending (ccl:make-semaphore)))
-    (loop
-      (cond (;; nothing to do or wait for anymore.
-             (and (empty-p queue) (empty-p processes))
-             (return))
-            (;; we've exceeded the subprocess limit. Wait for a few before continuing.
-             (or (>= (hash-table-count processes) *max-forks*)
-                 (empty-p queue))
-             (timed-do (*time-spent-waiting*) (ccl::wait-on-semaphore pending))
-             (let ((entry (loop :for process :being :the :hash-values :of processes
-                                :thereis (when (process-complete-p process) process))))
-               (assert entry () "couln't find a completed process in ~S" processes)
-               (remhash (process-thread process) processes)
-               (funcall (process-cleanup entry) (process-data entry) (thread-result entry)))))
-      (unless (empty-p queue)
-        (setf elem (dequeue queue))
-        (cond
-          ((funcall background-p elem)
-           (latest-stamp-f *max-actual-forks* (hash-table-count processes))
-           (let ((thread (make-communicating-thread pending elem thunk cleanup)))
-             (setf (gethash thread processes) thread)))
-          (t
-           (unwind-protect (funcall thunk elem)
-             (funcall cleanup elem *default-process-result*))))))
-    (assert (and (empty-p queue) (empty-p processes)) ()
-            "List of processes or list of things to do isn't empty: (~S...)/~S~%"
-            (queue-contents queue)
-            (table-values processes))
-  nil)
-|#
 
 ;;; Performing a parallel plan
 (defun action-result-file (o c)
@@ -748,59 +729,73 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
     (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
           #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
     (return-from perform-plan (perform-plan (serialize-plan plan))))
-  (with-slots ((action-queue starting-points) children parents planned-output-action-count) plan
-    (let ((all-deferred-warnings nil)
-          (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10)))))
-      (doqueue/forking
-          (action-queue ;; variable for each action, queue object
-           :variables (:item action :backgroundp backgroundp :result result :condition condition)
-           :background-p (destructuring-bind (o . c) action
-                           (not (or (needed-in-image-p o c) (action-effectively-done-p plan o c :force force))))
-           :announce
-           (destructuring-bind (o . c) action
-             (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                     (and (action-effectively-done-p plan o c :force force)
-                          (not (needed-in-image-p o c)))
-                     (action-description o c) backgroundp))
-           :result-file
-           (destructuring-bind (o . c) action (action-result-file o c))
-           ;; How we cleanup in the foreground after an action is run
-           :cleanup
-           (destructuring-bind (o . c) action
-             (cond
-               (condition
-                (finish-outputs)
-                (warn "Failed ~A~:[~; in the background~]. Retrying~:*~:[~; in the foreground~]."
-                      (action-description o c) backgroundp)
-                (finish-outputs)
-                (perform-with-restarts o c))
-               (t
-                (mark-operation-done o c)
-                (destructuring-bind (&key &allow-other-keys) result)))
-             (when backgroundp
-               (decf planned-output-action-count)
-               (format t "~&[~vd to go] Done ~A~%"
-                       ltogo planned-output-action-count (action-description o c))
-               (finish-outputs))
-             (mark-as-done plan o c)))
-        ;; What we do in each forked process
-        (destructuring-bind (o . c) action
-          (cond
-            (backgroundp
-             (perform o c)
-             `(:deferred-warnings ,(reify-deferred-warnings)))
-            ((and (or (action-already-done-p plan o c)
-                      (action-already-done-p nil o c))
-                  (not (needed-in-image-p o c)))
-             nil)
-            (t
-             (perform-with-restarts o c)
-             nil))))
-      (mapc #'unreify-deferred-warnings all-deferred-warnings)
-      (assert (and (empty-p action-queue) (empty-p children))
-              (parents children)
-              "Problem with the dependency graph: ~A"
-              (summarize-plan plan)))))
+  (with-slots (starting-points children parents planned-output-action-count) plan
+    (let* ((all-deferred-warnings nil)
+           (ltogo (unless (zerop planned-output-action-count) (ceiling (log planned-output-action-count 10))))
+           (fg-queue (simple-queue))
+           (bg-queue (simple-queue)))
+      (labels ((background-p (action)
+                 (destructuring-bind (o . c) action
+                   (not (or (needed-in-image-p o c)
+                            (action-effectively-done-p plan o c :force force)))))
+               (categorize-starting-points ()
+                 (loop :for action :in (dequeue-all starting-points) :do
+                   (enqueue (if (background-p action) bg-queue fg-queue) action))))
+        (categorize-starting-points)
+        (doqueue/forking
+            (fg-queue bg-queue
+             :variables (:item action :backgroundp backgroundp :result result :condition condition)
+             :deterministic-order
+             (when (plan-deterministic-p plan)
+               #'(lambda (action)
+                   (destructuring-bind (o . c) action
+                     (action-index (plan-action-status plan o c)))))
+             :announce
+             (destructuring-bind (o . c) action
+               (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
+                       (and (action-effectively-done-p plan o c :force force)
+                            (not (needed-in-image-p o c)))
+                       (action-description o c) backgroundp))
+             :result-file
+             (destructuring-bind (o . c) action (action-result-file o c))
+             ;; How we cleanup in the foreground after an action is run
+             :cleanup
+             (destructuring-bind (o . c) action
+               (cond
+                 (condition
+                  (finish-outputs)
+                  (warn "Failed ~A~:[~; in the background~]. Retrying~:*~:[~; in the foreground~]."
+                        (action-description o c) backgroundp)
+                  (finish-outputs)
+                  (perform-with-restarts o c))
+                 (t
+                  (mark-operation-done o c)
+                  (destructuring-bind (&key &allow-other-keys) result)))
+               (when backgroundp
+                 (decf planned-output-action-count)
+                 (format t "~&[~vd to go] Done ~A~%"
+                         ltogo planned-output-action-count (action-description o c))
+                 (finish-outputs))
+               (mark-as-done plan o c)
+               (categorize-starting-points)))
+          ;; What we do in each forked process
+          (destructuring-bind (o . c) action
+            (cond
+              (backgroundp
+               (perform o c)
+               `(:deferred-warnings ,(reify-deferred-warnings)))
+              ((and (or (action-already-done-p plan o c)
+                        (action-already-done-p nil o c))
+                    (not (needed-in-image-p o c)))
+               nil)
+              (t
+               (perform-with-restarts o c)
+               nil))))
+        (mapc #'unreify-deferred-warnings all-deferred-warnings)
+        (assert (and (empty-p fg-queue) (empty-p bg-queue) (empty-p children))
+                (parents children)
+                "Problem with the dependency graph: ~A"
+                (summarize-plan plan))))))
 
 ;;; Breadcrumbs: feature to replay otherwise non-deterministic builds
 (defvar *breadcrumb-stream* nil

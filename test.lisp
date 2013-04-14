@@ -6,9 +6,6 @@
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac 2>&1 | tee foo ; exit
 
-;;; TODO: have a deterministic variant that maximizes in-image then out-image actions.
-;;; i.e. maintain two queues, for in-image and out-image; exhaust one, then the other.
-
 (in-package :cl-user)
 
 (setf *load-verbose* nil
@@ -23,7 +20,7 @@
 
 (in-package :asdf) ;; in case there was a punt, be in the NEW asdf package.
 
-#+clisp (trace asdf::read-file-form asdf::read-file-forms)
+;;#+clisp (trace asdf::read-file-form asdf::read-file-forms)
 
 (pushnew :DBG *features*)
 (defmacro DBG (tag &rest exprs)
@@ -52,18 +49,18 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 
 #+(or)
 (trace
- traverse ;; traverse-component
- make-parallel-plan
+ ;; traverse ;; traverse-component
+ ;; make-parallel-plan
  ;; mark-as-done
  ;; process-return process-result ;; action-result-file
  ;; input-files output-files file-write-date
  ;; component-operation-time mark-operation-done
- ;; call-queue/forking make-communicating-subprocess
+ ;; call-queue/forking posix-waitpid
  ;; perform perform-with-restarts
  ;; compile-file load
- operate call-recording-breadcrumbs perform-plan
+ ;; operate call-recording-breadcrumbs perform-plan
 )
-#+allegro (trace posix-fork posix-wexitstatus posix-wait excl::getpid quit)
+#+allegro (trace posix-fork posix-wexitstatus posix-waitpid excl::getpid quit)
 
 (defvar *fare* (asdf/common-lisp:user-homedir-pathname))
 (defun subnamestring (base sub)
