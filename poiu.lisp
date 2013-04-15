@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.1")
+(defparameter *poiu-version* "1.30.2")
 (defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -107,9 +107,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (pushnew :poiu *features*))
 
 ;;; Some general purpose data structures we use
+(defgeneric empty-p (collection))
+(defgeneric size (collection))
+
 (defgeneric table-values (table))
 (defgeneric table-keys (table))
-(defgeneric empty-p (collection))
 
 (defgeneric queue-tail (queue))
 (defgeneric (setf queue-tail) (new-tail queue))
@@ -525,7 +527,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (format t "~&~S: posix-waitpid :pid ~S :nowait ~S~%" (excl::getpid) pid nohang)
   (multiple-value-bind (exit-status pid signal)
       (sys:reap-os-subprocess :pid (or pid -1) :wait (not nohang))
-    (values pid (list exit-status signal))))
+    (etypecase pid
+      (null (if nohang (values 0 ()) (values -1 +echild+)))
+      ((integer 1 *) (values pid (list exit-status signal))))))
 (defun posix-wexitstatus (x)
   (first x))
 );allegro
