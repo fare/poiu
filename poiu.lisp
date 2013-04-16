@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.3")
+(defparameter *poiu-version* "1.30.4")
 (defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -723,7 +723,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defun action-effectively-done-p (plan operation component &key force)
   (or (action-already-done-p plan operation component)
-      (and (not force) (nth-value 1 (compute-action-stamp nil operation component)))))
+      (and (not force)
+           (nth-value 1 (compute-action-stamp nil operation component)))))
 
 (defmethod perform-plan ((plan parallel-plan) &key force verbose &allow-other-keys)
   (unless (can-fork-p)
@@ -755,8 +756,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              (when verbose
                (destructuring-bind (o . c) action
                  (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                         (and (action-effectively-done-p plan o c :force force)
-                              (not (needed-in-image-p o c)))
+                         (action-effectively-done-p plan o c :force force)
                          (action-description o c) backgroundp)))
              :result-file
              (destructuring-bind (o . c) action (action-result-file o c))
@@ -786,9 +786,10 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
               (backgroundp
                (perform o c)
                `(:deferred-warnings ,(reify-deferred-warnings)))
-              ((and (action-effectively-done-p plan o c)
-                    (or (not (needed-in-image-p o c))
-                        (action-already-done-p nil o c)))
+              ((action-effectively-done-p plan o c)
+               (unless (or (not (needed-in-image-p o c))
+                           (action-already-done-p nil o c))
+                 (warn "WTF? aedp ~A" (action-description o c)))
                nil)
               (t
                (perform-with-restarts o c)
