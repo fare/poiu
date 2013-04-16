@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.2")
+(defparameter *poiu-version* "1.30.3")
 (defparameter *asdf-version-required-by-poiu* "2.32"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -524,12 +524,11 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (excl.osi:setpgrp))
 (defconstant +echild+ excl::*echild*)
 (defun posix-waitpid (pid &key nohang)
-  (format t "~&~S: posix-waitpid :pid ~S :nowait ~S~%" (excl::getpid) pid nohang)
   (multiple-value-bind (exit-status pid signal)
       (sys:reap-os-subprocess :pid (or pid -1) :wait (not nohang))
-    (etypecase pid
+    (etypecase exit-status
       (null (if nohang (values 0 ()) (values -1 +echild+)))
-      ((integer 1 *) (values pid (list exit-status signal))))))
+      (integer (values pid (list exit-status signal))))))
 (defun posix-wexitstatus (x)
   (first x))
 );allegro
@@ -726,7 +725,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (or (action-already-done-p plan operation component)
       (and (not force) (nth-value 1 (compute-action-stamp nil operation component)))))
 
-(defmethod perform-plan ((plan parallel-plan) &key force &allow-other-keys)
+(defmethod perform-plan ((plan parallel-plan) &key force verbose &allow-other-keys)
   (unless (can-fork-p)
     (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
           #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
@@ -753,11 +752,12 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                    (destructuring-bind (o . c) action
                      (action-index (plan-action-status plan o c)))))
              :announce
-             (destructuring-bind (o . c) action
-               (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
-                       (and (action-effectively-done-p plan o c :force force)
-                            (not (needed-in-image-p o c)))
-                       (action-description o c) backgroundp))
+             (when verbose
+               (destructuring-bind (o . c) action
+                 (format t "~&Will ~:[try~;skip~] ~A in ~:[foreground~;background~]~%"
+                         (and (action-effectively-done-p plan o c :force force)
+                              (not (needed-in-image-p o c)))
+                         (action-description o c) backgroundp)))
              :result-file
              (destructuring-bind (o . c) action (action-result-file o c))
              ;; How we cleanup in the foreground after an action is run
@@ -786,9 +786,9 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
               (backgroundp
                (perform o c)
                `(:deferred-warnings ,(reify-deferred-warnings)))
-              ((and (or (action-already-done-p plan o c)
-                        (action-already-done-p nil o c))
-                    (not (needed-in-image-p o c)))
+              ((and (action-effectively-done-p plan o c)
+                    (or (not (needed-in-image-p o c))
+                        (action-already-done-p nil o c)))
                nil)
               (t
                (perform-with-restarts o c)

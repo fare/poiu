@@ -14,7 +14,7 @@ You can get the original behavior of ASDF either
 by resetting the default plan class with
 	(setf asdf::*default-plan-class* 'asdf/plan:sequential-plan)
 or by calling asdf:operate or asdf:load-system with
-	(asdf:operate 'asdf:load-op :my-system :class asdf/plan:sequential-plan)
+	(asdf:operate 'asdf:load-op :my-system :plan-class asdf/plan:sequential-plan)
 
 The official web pages for POIU are:
     http://common-lisp.net/project/qitab/
