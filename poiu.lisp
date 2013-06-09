@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.4")
-(defparameter *asdf-version-required-by-poiu* "2.32"))
+(defparameter *poiu-version* "1.30.5")
+(defparameter *asdf-version-required-by-poiu* "3.0.1.4"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -306,14 +306,6 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
       (when (empty-p (action-map (plan-children p) action))
         (enqueue (plan-starting-points p) action)))))
 
-(defgeneric* (make-parallel-plan) (operation component &key &allow-other-keys))
-(define-convenience-action-methods make-parallel-plan (o c &key))
-(defmethod make-parallel-plan ((operation operation) (component component) &rest keys &key &allow-other-keys)
-  (let ((plan (apply 'make-instance 'parallel-plan
-                     :system (component-system component) keys)))
-    (traverse-action plan operation component t)
-    plan))
-
 (defun reify-action (action)
   (destructuring-bind (o . c) action
     (check-type o operation)
@@ -364,13 +356,15 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
 
-(defmethod traverse :before ((o operation) (c component) &rest keys &key plan-class &allow-other-keys)
-  (when (eq (or plan-class *default-plan-class*) 'parallel-plan)
-    ;; make a plan once already and destructively check it
-    (check-invariants (apply 'make-parallel-plan o c keys))))
+(defmethod make-plan :around (plan-class (o operation) (c component) &rest keys &key &allow-other-keys)
+  (let ((plan (call-next-method)))
+    (when (typep plan 'parallel-plan)
+      ;; make a plan once already and destructively check it
+      (check-invariants (call-next-method)))
+    plan))
 
 (defmethod plan-actions ((plan parallel-plan))
-  plan)
+  (coerce (plan-all-actions plan) 'list))
 
 (setf *default-plan-class* 'parallel-plan)
 
@@ -480,7 +474,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun posix-setpgrp ()
   (if-let (it (find-symbol* 'setprg 'posix nil)) (funcall it)))
 (defun no-child-process-condition-p (c)
-  (and (typep c 'system::simple-os-error)
+  (and (typep c 'ext::os-error)
        (equal (simple-condition-format-control c)
                   "UNIX error ~S (ECHILD): No child processes
 ")))
@@ -493,7 +487,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
           (0 (values 0 ()))
           (-1 (values -1 :error))
           (t (values pid (list pid status code)))))
-    ((and system::simple-os-error (satisfies no-child-process-condition-p)) ()
+    ((and ext::os-error (satisfies no-child-process-condition-p)) ()
       (values -1 +echild+))))
 (defun posix-wexitstatus (x)
   (if (eq :exited (second x))

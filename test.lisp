@@ -20,8 +20,6 @@
 
 (in-package :asdf) ;; in case there was a punt, be in the NEW asdf package.
 
-;;#+clisp (trace asdf::read-file-form asdf::read-file-forms)
-
 (pushnew :DBG *features*)
 (defmacro DBG (tag &rest exprs)
   "simple debug statement macro:
@@ -49,8 +47,8 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 
 #+(or)
 (trace
- ;; traverse ;; traverse-component
- ;; make-parallel-plan
+ ;; make-plan make-parallel-plan
+ perform-plan
  ;; mark-as-done
  ;; process-return process-result ;; action-result-file
  ;; input-files output-files file-write-date
@@ -58,9 +56,10 @@ outputs a tag plus a list of source expressions and their resulting values, retu
  ;; call-queue/forking posix-waitpid
  ;; perform perform-with-restarts
  ;; compile-file load
- ;; operate call-recording-breadcrumbs perform-plan
+ ;; operate call-recording-breadcrumbs
 )
-#+allegro (trace posix-fork posix-wexitstatus posix-waitpid excl::getpid quit)
+;;#+allegro (trace posix-fork posix-wexitstatus posix-waitpid excl::getpid quit)
+;;#+clisp (trace asdf::read-file-form asdf::read-file-forms)
 
 (defvar *fare* (asdf/common-lisp:user-homedir-pathname))
 (defun subnamestring (base sub)
