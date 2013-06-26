@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.5")
+(defparameter *poiu-version* "1.30.6")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4"))
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -757,6 +757,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
              ;; How we cleanup in the foreground after an action is run
              :cleanup
              (destructuring-bind (o . c) action
+               (push (getf result :deferred-warnings) all-deferred-warnings)
                (cond
                  (condition
                   (finish-outputs)
