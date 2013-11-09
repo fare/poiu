@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.7")
+(defparameter *poiu-version* "1.30.8")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -379,7 +379,19 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   #+(and sbcl unix)
   (sb-sys:default-interrupt sb-unix:sigchld)) ; ignore-interrupt is undefined for SIGCHLD.
 
-(defparameter *max-forks* 16) ; limit how parallel we will try to be.
+(defun ncpus ()
+  (ignore-errors
+    (parse-integer
+     (cond
+      ((featurep :linux)
+       (run-program '("grep" "-c" "^processor.:" "/proc/cpuinfo") :output :string))
+      ((featurep :darwin)
+       (run-program '("sysctl" "-n" "hw.ncpu") :output :string))
+      ((os-windows-p)
+       (getenv "NUMBER_OF_PROCESSORS")))
+     :junk-allowed t)))
+
+(defparameter *max-forks* (or (ncpus) 16)) ; limit how parallel we will try to be.
 (defparameter *max-actual-forks* nil) ; record how parallel we actually went.
 
 #+(and sbcl unix)
