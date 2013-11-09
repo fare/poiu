@@ -3,8 +3,8 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.6")
-(defparameter *asdf-version-required-by-poiu* "3.0.1.4"))
+(defparameter *poiu-version* "1.30.7")
+(defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
 This version of POIU was designed to work with ASDF no earlier than specified.
@@ -356,7 +356,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
         (error "Cycle detected in the dependency graph:~%~S"
                plan)))))
 
-(defmethod make-plan :around (plan-class (o operation) (c component) &rest keys &key &allow-other-keys)
+(defmethod make-plan :around (plan-class (o operation) (c component) &key &allow-other-keys)
   (let ((plan (call-next-method)))
     (when (typep plan 'parallel-plan)
       ;; make a plan once already and destructively check it
@@ -770,8 +770,8 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
                   (destructuring-bind (&key &allow-other-keys) result)))
                (when backgroundp
                  (decf planned-output-action-count)
-                 (format t "~&[~vd to go] Done ~A~%"
-                         ltogo planned-output-action-count (action-description o c))
+                 (asdf-message "~&[~vd to go] Done ~A~%"
+                               ltogo planned-output-action-count (action-description o c))
                  (finish-outputs))
                (mark-as-done plan o c)
                (categorize-starting-points)))
