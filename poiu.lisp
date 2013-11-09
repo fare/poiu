@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.8")
+(defparameter *poiu-version* "1.30.9")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -732,10 +732,19 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
       (and (not force)
            (nth-value 1 (compute-action-stamp nil operation component)))))
 
+(defvar *warned-no-fork-p* nil)
+
+(defun can-fork-or-warn ()
+  (or (can-fork-p)
+      (unless *warned-no-fork*
+        (warn
+         #.(progn
+             "Your implementation cannot fork. Running your build serially."
+             #+(or allegro clisp clozure sbcl)
+             "You are running threads, so it is not safe to fork. Running your build serially.")))))
+
 (defmethod perform-plan ((plan parallel-plan) &key force verbose &allow-other-keys)
-  (unless (can-fork-p)
-    (warn #+(or clozure sbcl) "You are running threads, so it is not safe to fork. Running your build serially."
-          #-(or clozure sbcl) "Your implementation cannot fork. Running your build serially.")
+  (unless (can-fork-or-warn)
     (return-from perform-plan (perform-plan (serialize-plan plan))))
   (with-slots (starting-points children parents planned-output-action-count) plan
     (let* ((all-deferred-warnings nil)
