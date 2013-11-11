@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.9")
+(defparameter *poiu-version* "1.30.10")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -736,7 +736,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 
 (defun can-fork-or-warn ()
   (or (can-fork-p)
-      (unless *warned-no-fork*
+      (unless *warned-no-fork-p*
         (warn
          #.(progn
              "Your implementation cannot fork. Running your build serially."
