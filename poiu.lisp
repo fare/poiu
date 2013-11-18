@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.10")
+(defparameter *poiu-version* "1.30.11")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -380,16 +380,13 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
   (sb-sys:default-interrupt sb-unix:sigchld)) ; ignore-interrupt is undefined for SIGCHLD.
 
 (defun ncpus ()
-  (ignore-errors
-    (parse-integer
-     (cond
-      ((featurep :linux)
-       (run-program '("grep" "-c" "^processor.:" "/proc/cpuinfo") :output :string))
-      ((featurep :darwin)
-       (run-program '("sysctl" "-n" "hw.ncpu") :output :string))
-      ((os-windows-p)
-       (getenv "NUMBER_OF_PROCESSORS")))
-     :junk-allowed t)))
+  (let ((ncpus (cond ((featurep :linux)
+                      (run-program '("grep" "-c" "^processor.:" "/proc/cpuinfo") :output :string))
+                     ((featurep :darwin)
+                      (run-program '("sysctl" "-n" "hw.ncpu") :output :string))
+                     ((os-windows-p)
+                      (getenv "NUMBER_OF_PROCESSORS")))))
+     (and ncpus (ignore-errors (parse-integer ncpus :junk-allowed t)))))
 
 (defparameter *max-forks* (or (ncpus) 16)) ; limit how parallel we will try to be.
 (defparameter *max-actual-forks* nil) ; record how parallel we actually went.
@@ -737,6 +734,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
 (defun can-fork-or-warn ()
   (or (can-fork-p)
       (unless *warned-no-fork-p*
+        (setf *warned-no-fork-p* t)
         (warn
          #.(progn
              "Your implementation cannot fork. Running your build serially."
