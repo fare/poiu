@@ -3,7 +3,7 @@
 #+xcvb (module (:depends-on ("asdf")))
 (in-package :asdf)
 (eval-when (:compile-toplevel :load-toplevel :execute)
-(defparameter *poiu-version* "1.30.11")
+(defparameter *poiu-version* "1.30.12")
 (defparameter *asdf-version-required-by-poiu* "3.0.1.4")) ;; make-plan
 #|
 POIU is a modification of ASDF that may operate on your systems in parallel.
@@ -798,7 +798,7 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU:
           (destructuring-bind (o . c) action
             (cond
               (backgroundp
-               (perform o c)
+               (perform-with-restarts o c)
                `(:deferred-warnings ,(reify-deferred-warnings)))
               ((action-effectively-done-p plan o c)
                (unless (or (not (needed-in-image-p o c))
