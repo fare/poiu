@@ -17,8 +17,11 @@
 #-asdf2 (load "../asdf/build/asdf.lisp")
 
 (asdf:load-system :asdf)
+(asdf:load-system :poiu)
 
-(in-package :asdf) ;; in case there was a punt, be in the NEW asdf package.
+(in-package :poiu) ;; in case there was a punt, be in the NEW asdf package.
+
+(assert (can-fork-p))
 
 (pushnew :DBG *features*)
 (defmacro DBG (tag &rest exprs)
@@ -35,15 +38,13 @@ outputs a tag plus a list of source expressions and their resulting values, retu
          exprs)
       (apply 'values ,res)))))
 
-(load-system :poiu :verbose t)
 
 (setf *load-verbose* t
       *load-print* t
       *compile-verbose* t
-      *compile-print* t
-      *asdf-verbose* t)
+      *compile-print* t)
 
-(format *error-output* "~&POIU ~A~%" *poiu-version*)
+(format *error-output* "~&POIU ~A~%" (component-version (find-system "poiu")))
 
 #+(or)
 (trace
@@ -61,9 +62,9 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 ;;#+allegro (trace posix-fork posix-wexitstatus posix-waitpid excl::getpid quit)
 ;;#+clisp (trace asdf::read-file-form asdf::read-file-forms)
 
-(defvar *fare* (asdf/common-lisp:user-homedir-pathname))
+(defvar *fare* (uiop/common-lisp:user-homedir-pathname))
 (defun subnamestring (base sub)
-  (namestring (asdf/driver:subpathname base sub)))
+  (namestring (uiop:subpathname base sub)))
 
 (block nil
   (handler-bind ((error #'(lambda (condition)
@@ -72,15 +73,16 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (format t "~&ERROR:~%~A~%" condition)
                             (finish-output)
                             (return))))
-    (asdf:parallel-load-system
-     :exscribe :verbose t
+    (load-system
+     :exscribe ;; :verbose t
      :force :all
+     :plan-class 'parallel-plan
      :breadcrumbs-to "/tmp/breadcrumbs.text")
-    (funcall (asdf/package:find-symbol* :process-command-line :exscribe)
+    (funcall (uiop:find-symbol* :process-command-line :exscribe)
              `("-I" ,(subnamestring *fare* "fare/www/")
                "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
 
-(format t "~&~S~%" (asdf/os:implementation-identifier))
+(format t "~&~S~%" (uiop:implementation-identifier))
 (format t "~&Compiled with as many as ~D forked subprocesses~%" *max-actual-forks*)
 
 (quit 0)

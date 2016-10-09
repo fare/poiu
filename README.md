@@ -4,6 +4,72 @@ POIU: Parallel Operator on Independent Units
 POIU is an ASDF extension that will parallelize your Common Lisp builds,
 for some build speedup, both through parallelization and reduced GC.
 
+
+Introduction
+------------
+
+POIU is a modification of ASDF that may operate on your systems in parallel.
+This version of POIU was designed to work with ASDF no earlier than specified.
+
+POIU will notably compile each Lisp file in its own forked process,
+in parallel with other operations (compilation or loading).
+However, it will load FASLs serially as they become available.
+
+POIU will only make a difference with respect to ASDF if the dependencies
+are not serial (i.e. no difference for systems using `:serial t` everywhere).
+You can however use Andreas Fuchs's `ASDF-DEPENDENCY-GROVEL` to autodetect
+minimal dependencies from an ASDF system (or a set of multiple such).
+
+POIU may speed up compilation by utilizing all CPUs of an SMP machine.
+POIU may also reduce the memory pressure on the main (loading) process.
+POIU will enforce separation between compile- and load- time environments,
+helping you detect when `:LOAD-TOPLEVEL` is missing in `EVAL-WHEN`'s
+as needed for incremental compilation even with vanilla ASDF.
+POIU will also catch *some* missing dependencies as exist between the
+files that it will happen to compile in parallel (but may not catch all
+dependencies that may otherwise be missing from your system).
+
+When a compilation fails in a parallel process, POIU will retry compiling
+in the main (loading) process so you get the usual ASDF error behavior,
+with a chance to debug the issue and restart the operation.
+
+POIU was currently only made to work with SBCL, CCL and CLISP.
+Porting to another Lisp implementation that supports ASDF
+should not be difficult. [Note: the CLISP port is somewhat less stable.]
+When unable to fork because the implementation is unsupported,
+or because multiple threads are currently in use,
+POIU will fall back to compiling everything in the main process.
+
+Warning to CCL users: you need to save a CCL image that doesn't start threads
+at startup in order to use POIU (or anything that uses fork).
+Watch [QITAB](https://common-lisp.net/project/qitab/)
+for a package that does just that: `SINGLE-THREADED-CCL`.
+
+To use POIU, (1) make sure `asdf.lisp` is loaded.
+We require a recent enough ASDF 3; see specific requirement in [poiu.asd](poiu.asd).
+Usually, you can just:
+	(require "asdf")
+
+(2) configure ASDF's `SOURCE-REGISTRY` or its `*CENTRAL-REGISTRY*`,
+then load POIU:
+	(asdf:load-system :poiu)
+
+(3) POIU is active by default. You can just
+	(asdf:load-system :your-system)
+
+and POIU will be used to compile it.
+Once again, you may want to first use `asdf-dependency-grovel`
+to minimize the dependencies in your system.
+
+POIU was initially written by Andreas Fuchs in 2007
+as part of an experiment funded by ITA Software, Inc.
+It was subsequently modified by Francois-Rene Rideau at ITA Software,
+who adapted POIU for use with XCVB in 2009,
+wrote the CCL and CLISP ports, moved code from POIU to ASDF, and
+eventually rewrote both of them together in a simpler way.
+The original copyright and (MIT-style) licence of ASDF (below) applies to POIU.
+
+
 Usage
 -----
 
