@@ -48,8 +48,8 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 
 #+(or)
 (trace
- ;; make-plan make-parallel-plan
- perform-plan
+ ;; record-dependency operate make-plan perform-plan perform
+ ;; action-status (setf action-status) action-already-done-p
  ;; mark-as-done
  ;; process-return process-result ;; action-result-file
  ;; input-files output-files file-write-date

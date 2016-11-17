@@ -7,12 +7,12 @@
 POIU will notably compile each Lisp file in its own forked process,
 in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
-  :depends-on ((:version "asdf" "3.0.2")
-               (:feature (:and :sbcl :os-unix) "sb-posix"))
-  :version "1.31.1"
+  :depends-on ((:version "asdf" "3.3.0")
+               (:feature (:and :sbcl :os-unix) (:require :sb-posix)))
+  :version "1.32"
   :components
   ((:file "queue")
    (:file "fork")
-   (:file "action-graph" :depends-on ("queue"))
    (:file "background-process" :depends-on ("queue" "fork"))
+   (:file "action-graph" :depends-on ("queue"))
    (:file "poiu" :depends-on ("action-graph" "background-process"))))

@@ -1,13 +1,13 @@
 (uiop:define-package :poiu/action-graph
   (:use :uiop/common-lisp :uiop :poiu/queue
-        :asdf/upgrade
+        :asdf/upgrade :asdf/session
         :asdf/component :asdf/system :asdf/find-system :asdf/find-component
         :asdf/operation :asdf/action :asdf/plan)
   (:export #:parallel-plan #:*parallel-plan-deterministic-p*
            #:summarize-plan #:serialize-plan
            #:starting-points #:children #:parents ;; slot names -- FIXME, have clients use accessors
-           #:plan-starting-points #:plan-children #:plan-parents
-           #:reify-action #:mark-as-done #:plan-deterministic-p
+           #:plan-starting-points #:plan-children #:plan-parents #:plan-action-index
+           #:plan-deterministic-p
            #:action-map #:action-map-keys #:action-map-values))
 (in-package :poiu/action-graph)
 
@@ -25,49 +25,39 @@
     :documentation "map an action to a (hash)set of \"parents\" that depend on it")
    (all-actions
     :initform (make-array '(0) :adjustable t :fill-pointer 0) :reader plan-all-actions)
+   (action-indices
+    :initform (make-hash-table :test #'equal) :reader plan-action-indices
+    :documentation "inverting the all-actions table")
    (deterministic-p
     :initform *parallel-plan-deterministic-p* :initarg :deterministic-p
     :type boolean :reader plan-deterministic-p
     :documentation "is this plan supposed to be executed in deterministic way?")))
 
+(defgeneric plan-action-index (plan action))
+(defmethod plan-action-index ((plan parallel-plan) action)
+  (gethash action (plan-action-indices plan)))
+
+#| ;; We can't do that if we want to trace action-already-done-p
 (defmethod print-object ((plan parallel-plan) stream)
   (print-unreadable-object (plan stream :type t :identity t)
     (with-safe-io-syntax (:package :asdf)
-      (format stream "~A" (coerce-name (plan-system plan)))
-      #|(pprint (summarize-plan plan) stream)|#)))
-
-(defmethod plan-operates-on-p ((plan parallel-plan) (component-path list))
-  (with-slots (starting-points children) plan
-    (let ((component (find-component () component-path)))
-      (remove component (append (queue-contents starting-points)
-                                (mapcar 'node-action (action-map-keys children)))
-              :key 'cdr :test-not 'eq))))
-
-(defun action-node (action)
-  (destructuring-bind (o . c) action
-    (check-type o operation)
-    (check-type c component)
-    (cons (type-of o) c)))
-(defun node-action (node)
-  (destructuring-bind (oc . c) node
-    (check-type oc symbol)
-    (check-type c component)
-    (cons (make-operation oc) c)))
+      (pprint (summarize-plan plan) stream))))
+|#
 
 (defun make-action-map ()
   (make-hash-table :test 'equal))
 (defun action-map (map action)
-  (gethash (action-node action) map))
+  (gethash action map))
 (defun action-unmap (map action)
-  (remhash (action-node action) map))
+  (remhash action map))
 (defun (setf action-map) (value map action)
-  (setf (gethash (action-node action) map) value))
+  (setf (gethash action map) value))
 (defun action-map-values (map)
   (table-values map))
 (defun action-map-keys (map)
-  (mapcar 'node-action (table-keys map)))
+  (table-keys map))
 
-(defun record-dependency (parent child parents children)
+(defun record-action-dependency (parent child parents children)
   (unless (action-map parents child)
     (setf (action-map parents child) (make-action-map)))
   (when parent
@@ -76,10 +66,9 @@
     (setf (action-map (action-map children parent) child) t)
     (setf (action-map (action-map parents child) parent) t)))
 
-(defun mark-as-done (plan operation component)
+(defun parallel-plan-mark-as-done (plan operation component)
   ;; marks the action of operation on component as done in the deps hash-tables,
   ;; returns a list of new actions that are enabled by it being done.
-  (check-type operation operation)
   (with-slots (starting-points parents children) plan
     (let* ((action (cons operation component))
            (action-parents (if-let (it (action-map parents action))
@@ -111,56 +100,52 @@
                     (enqueue-in-front starting-points enabled-action)))
         (values enabled-parents forlorn-children)))))
 
-(defmethod plan-record-dependency ((plan parallel-plan) (o operation) (c component))
-  (with-slots (children parents visiting-action-list) plan
-    (let ((action (cons o c))
-          (parent (first visiting-action-list)))
-      (record-dependency parent action parents children))))
+(defmethod mark-as-done :after ((plan parallel-plan) (operation operation) (component component))
+  (parallel-plan-mark-as-done plan operation component))
 
-(defmethod (setf plan-action-status) :before
+(defmethod record-dependency ((plan parallel-plan) (o operation) (c component))
+  (let ((action (make-action o c))
+        (parent (first (visiting-action-list *asdf-session*))))
+    ;; Only record the dependency if it points to a parent in the current plan.
+    (when (and parent (plan-action-index plan action))
+      (record-action-dependency parent action (plan-parents plan) (plan-children plan)))))
+
+(defmethod (setf action-status) :before
     (new-status (p parallel-plan) (o operation) (c component))
-  (declare (ignorable new-status))
-  (unless (gethash (node-for o c) (asdf/plan::plan-visited-actions p)) ; already visited?
-    (let ((action (cons o c)))
+  (let ((action (make-action o c)))
+    (unless (gethash action (visited-actions *asdf-session*)) ; already visited?
+      (setf (gethash action (plan-action-indices p)) (fill-pointer (plan-all-actions p)))
       (vector-push-extend action (plan-all-actions p))
       (when (empty-p (action-map (plan-children p) action))
         (enqueue (plan-starting-points p) action)))))
 
-(defun reify-action (action)
-  (destructuring-bind (o . c) action
-    (check-type o operation)
-    (check-type c component)
-    (cons (type-of o) (component-find-path c))))
-
 (defun summarize-plan (plan)
   (with-slots (starting-points children) plan
     `((:starting-points
-       ,(loop :for action :in (queue-contents starting-points)
-              :collect (reify-action action)))
+       ,(mapcar 'action-path (queue-contents starting-points)))
       (:dependencies
        ,(mapcar #'rest
                   (sort
                    (loop :for parent-node :being :the :hash-keys :in children
                          :using (:hash-value progeny)
-                         :for parent = (node-action parent-node)
+                         :for parent = parent-node
                          :for (o . c) = parent
-                         :collect `(,(action-index (plan-action-status plan o c))
-                                    ,(reify-action parent)
+                         :collect `(,(plan-action-index plan parent)
+                                    ,(action-path parent)
                                     ,(if (action-already-done-p plan o c) :- :+)
                                     ,@(loop :for child-node :being :the :hash-keys :in progeny
                                             :using (:hash-value v)
-                                            :for child = (node-action child-node)
-                                            :when v :collect (reify-action child))))
+                                            :for child = child-node
+                                            :when v :collect (action-path child))))
                    #'< :key #'first))))))
 
 (defgeneric serialize-plan (plan))
 (defmethod serialize-plan ((plan list)) plan)
 (defmethod serialize-plan ((plan parallel-plan))
-  (with-slots (all-actions visited-actions) plan
-    (loop :for action :in (reverse (coerce all-actions 'list))
+  (with-slots (all-actions) plan
+    (loop :for action :in (plan-actions plan)
           :for (o . c) = action
-          :for status = (plan-action-status plan o c)
-          :when (action-planned-p status) :collect action)))
+          :when (status-need-p (action-status plan o c)) :collect action)))
 
 (defgeneric check-invariants (object))
 
@@ -174,12 +159,13 @@
           (mark-as-done plan operation component)))
       (unless (empty-p children)
         (error "Cycle detected in the dependency graph:~%~S"
-               plan)))))
+               (summarize-plan plan))))))
 
 (defmethod make-plan :around (plan-class (o operation) (c component) &key &allow-other-keys)
   (let ((plan (call-next-method)))
+    (warn "~S" (summarize-plan plan))
     (when (typep plan 'parallel-plan)
-      ;; make a plan once already and destructively check it
+      ;; make a second plan and destructively check it
       (check-invariants (call-next-method)))
     plan))
 

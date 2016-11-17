@@ -48,7 +48,7 @@
      (and ncpus (ignore-errors (parse-integer ncpus :junk-allowed t)))))
 
 (defparameter *max-forks* (or (ncpus) 16)) ; limit how parallel we will try to be.
-(defparameter *max-actual-forks* nil) ; record how parallel we actually went.
+(defparameter *max-actual-forks* 0) ; record how parallel we actually went.
 
 #+(and sbcl os-unix)
 (progn

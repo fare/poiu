@@ -94,14 +94,13 @@ in which case POIU defaults the `*max-forks*` to 16.
 Installation
 ------------
 
-Just make sure you use ASDF 3.0.2 or later, and include
+Just make sure you use ASDF 3.3.0 or later, and include
       `(asdf:load-system :poiu)`
 in your build scripts before you build the rest of your software.
 It automatically will hook into `asdf::*default-plan-class*`,
 though you can reset it.
 
-POIU depends on the new plan-making internals of ASDF 3
-as well as on ASDF 3's new UIOP library.
+POIU depends on the new plan-making internals of ASDF 3.3.
 
 
 Support
