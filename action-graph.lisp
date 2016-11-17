@@ -6,7 +6,9 @@
   (:export #:parallel-plan #:*parallel-plan-deterministic-p*
            #:summarize-plan #:serialize-plan
            #:starting-points #:children #:parents ;; slot names -- FIXME, have clients use accessors
-           #:reify-action #:mark-as-done #:plan-deterministic-p))
+           #:plan-starting-points #:plan-children #:plan-parents
+           #:reify-action #:mark-as-done #:plan-deterministic-p
+           #:action-map #:action-map-keys #:action-map-values))
 (in-package :poiu/action-graph)
 
 (defvar *parallel-plan-deterministic-p* t) ;; Use the deterministic build by default.
@@ -163,7 +165,7 @@
 (defgeneric check-invariants (object))
 
 (defmethod check-invariants ((plan parallel-plan))
-  ;; This destructively checks that the dependency tree model is coherent.
+  ;; This *destructively* checks that the dependency tree model is coherent.
   (while-collecting (collect)
     (with-slots (starting-points parents children) plan
       (with-queue (action action-queue starting-points)
