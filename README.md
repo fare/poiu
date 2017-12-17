@@ -21,9 +21,10 @@ You can however use Andreas Fuchs's `ASDF-DEPENDENCY-GROVEL` to autodetect
 minimal dependencies from an ASDF system (or a set of multiple such).
 
 POIU may speed up compilation by utilizing all CPUs of an SMP machine.
-POIU may also reduce the memory pressure on the main (loading) process.
+POIU may also reduce the memory pressure on the main (loading) process
+by off-loading the compilation onto forked subprocesses.
 POIU will enforce separation between compile- and load- time environments,
-helping you detect when `:LOAD-TOPLEVEL` is missing in `EVAL-WHEN`'s
+helping you detect when `:LOAD-TOPLEVEL` is missing in `EVAL-WHEN`'s,
 as needed for incremental compilation even with vanilla ASDF.
 POIU will also catch *some* missing dependencies as exist between the
 files that it will happen to compile in parallel (but may not catch all
@@ -34,8 +35,9 @@ in the main (loading) process so you get the usual ASDF error behavior,
 with a chance to debug the issue and restart the operation.
 
 POIU was currently only made to work with SBCL, CCL and CLISP.
+[NB: the CLISP port is somewhat less stable.]
 Porting to another Lisp implementation that supports ASDF
-should not be difficult. [Note: the CLISP port is somewhat less stable.]
+should not be difficult.
 When unable to fork because the implementation is unsupported,
 or because multiple threads are currently in use,
 POIU will fall back to compiling everything in the main process.
@@ -46,16 +48,22 @@ Watch [QITAB](https://common-lisp.net/project/qitab/)
 for a package that does just that: `SINGLE-THREADED-CCL`.
 
 To use POIU, (1) make sure `asdf.lisp` is loaded.
-We require a recent enough ASDF 3; see specific requirement in [poiu.asd](poiu.asd).
+We require a recent enough ASDF; see specific requirement in [poiu.asd](poiu.asd).
 Usually, you can just:
-	(require "asdf")
+```
+(require "asdf")
+```
 
 (2) configure ASDF's `SOURCE-REGISTRY` or its `*CENTRAL-REGISTRY*`,
 then load POIU:
-	(asdf:load-system :poiu)
+```
+(asdf:load-system :poiu)
+```
 
 (3) POIU is active by default. You can just
-	(asdf:load-system :your-system)
+```
+(asdf:load-system :your-system)
+```
 
 and POIU will be used to compile it.
 Once again, you may want to first use `asdf-dependency-grovel`
@@ -73,20 +81,21 @@ The original copyright and (MIT-style) licence of ASDF (below) applies to POIU.
 Usage
 -----
 
-POIU overrides your ASDF 3's `asdf::*default-plan-class*`,
+POIU overrides your ASDF 3's `asdf::*plan-class*`,
 and thereafter all compilation goes through POIU by default.
 Bind this variable back to `'asdf::sequential-plan` to restore the default,
 and explicitly to `'asdf::parallel-plan` to go parallel again.
 You can also explicitly pass a `:plan-class` parameter to `asdf:operate` & co,
 or you can call the parallel-operate functions defined by POIU.
 
-You can control how many processes POIU may fork at a time my binding
-	`asdf::*max-forks*`
+You can control how many processes POIU may fork at a time
+by binding `asdf::*max-forks*`.
 The default is the number of cpus on which the machine POIU was loaded,
 which if resuming from a dumped image might not be the same as
-the machine on which it is now running.
+the machine on which it is now running, so you may want to reset that variable
+in e.g. uiop's image-restore hook.
 You can recompute the number of processors on the current machine with:
-	`(asdf::ncpus)`
+`(asdf::ncpus)`.
 In case this function fails to find an answer, it returns NIL,
 in which case POIU defaults the `*max-forks*` to 16.
 
@@ -95,12 +104,12 @@ Installation
 ------------
 
 Just make sure you use ASDF 3.3.0 or later, and include
-      `(asdf:load-system :poiu)`
+`(asdf:load-system :poiu)`
 in your build scripts before you build the rest of your software.
-It automatically will hook into `asdf::*default-plan-class*`,
+It automatically will hook into `asdf::*plan-class*`,
 though you can reset it.
 
-POIU depends on the new plan-making internals of ASDF 3.3.
+POIU 1.32 depends on the new plan-making internals of ASDF 3.3.
 
 
 Support
@@ -117,6 +126,8 @@ The proper mailing-lists on which to ask questions are
 Determinism
 -----------
 
-POIU uses convergent parallelism by default to preserve some determinism, but currently
-it's configured to be deterministic *given the incremental state*, instead of deterministic
-*given the source only*, which would be safer though slower. TODO: make it the latter by default.
+POIU uses convergent parallelism by default to preserve some determinism, but
+currently it's configured to be deterministic *given the incremental state*,
+instead of deterministic *given the source only*,
+which would be safer though slower.
+TODO: make the latter the default.

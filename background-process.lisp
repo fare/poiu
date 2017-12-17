@@ -150,7 +150,8 @@
                (funcall announce item t)
                (let ((process (make-background-process item fun cleanup (funcall result-file item))))
                  (setf (gethash (process-pid process) processes) process)
-                 (latest-stamp-f *max-actual-forks* (size processes)))))
+                 (when (< *max-actual-forks* (size processes))
+                   (setf *max-actual-forks* (size processes))))))
             (;; foreground actions in non-deterministic mode? Opportunistically run one
              (and fg-item? (not deterministic-order))
              (fg-perform (dequeue fg-queue)))
