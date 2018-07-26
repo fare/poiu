@@ -8,13 +8,14 @@ for some build speedup, both through parallelization and reduced GC.
 WARNING
 -------
 
-POIU 1.34 is broken: It doesn't incorporate all the changes required for it
-to actually work with ASDF 3.3.0 or later, yet is modified enough to not work
-with ASDF 3.2.1 or earlier anymore.
+POIU 1.34 is broken: It requires more changes to actually work with a recent
+ASDF (3.3.2 or later), yet is modified enough to not work with older ASDF.
 
-For a working combination, try POIU 1.31.1 and ASDF 3.2.1 -- which, unhappily,
-may require overriding your implementation's ASDF e.g. using the
-`tools/install-asdf.lisp` script from the ASDF source repository at
+For a working combination, try POIU 1.31.1 and ASDF 3.1.7 -- which if your
+implementation comes with a more recent ASDF
+(as checked by `(require :asdf) (asdf:asdf-version)`) may require
+overriding your implementation's ASDF e.g. using the `tools/install-asdf.lisp`
+script from the ASDF source repository at
 < http://gitlab.common-lisp.net/asdf/asdf >.
 
 
@@ -116,16 +117,19 @@ in which case POIU defaults the `*max-forks*` to 16.
 Installation
 ------------
 
-Just make sure you use ASDF 3.3.0 or later (we recommend at least 3.3.2.2),
-and in your build scripts, after you `(require "asdf")` and before you build the
-rest of your software, include the line:
+POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0,
+but for bug fix purposes, we recommend ASDF 3.3.2.2 or later.
+
+To use POIU, just make sure you use a recent enough ASDF,
+and in your build scripts, after you `(require "asdf")`
+but before you build the rest of your software, include the line:
 
     (asdf:load-system "poiu")
 
 It automatically will hook into `asdf::*plan-class*`,
 though you can reset it.
 
-POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0.
+
 
 
 Support
