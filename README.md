@@ -5,6 +5,19 @@ POIU is an ASDF extension that will parallelize your Common Lisp builds,
 for some build speedup, both through parallelization and reduced GC.
 
 
+WARNING
+-------
+
+POIU 1.34 is broken: It doesn't incorporate all the changes required for it
+to actually work with ASDF 3.3.0 or later, yet is modified enough to not work
+with ASDF 3.2.1 or earlier anymore.
+
+For a working combination, try POIU 1.31.1 and ASDF 3.2.1 -- which, unhappily,
+may require overriding your implementation's ASDF e.g. using the
+`tools/install-asdf.lisp` script from the ASDF source repository at
+< http://gitlab.common-lisp.net/asdf/asdf >.
+
+
 Introduction
 ------------
 
@@ -95,7 +108,7 @@ which if resuming from a dumped image might not be the same as
 the machine on which it is now running, so you may want to reset that variable
 in e.g. uiop's image-restore hook.
 You can recompute the number of processors on the current machine with:
-`(asdf::ncpus)`.
+`(poiu/fork:ncpus)`.
 In case this function fails to find an answer, it returns NIL,
 in which case POIU defaults the `*max-forks*` to 16.
 
@@ -103,13 +116,16 @@ in which case POIU defaults the `*max-forks*` to 16.
 Installation
 ------------
 
-Just make sure you use ASDF 3.3.0 or later, and include
-`(asdf:load-system :poiu)`
-in your build scripts before you build the rest of your software.
+Just make sure you use ASDF 3.3.0 or later (we recommend at least 3.3.2.2),
+and in your build scripts, after you `(require "asdf")` and before you build the
+rest of your software, include the line:
+
+    (asdf:load-system "poiu")
+
 It automatically will hook into `asdf::*plan-class*`,
 though you can reset it.
 
-POIU 1.32 depends on the new plan-making internals of ASDF 3.3.
+POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0.
 
 
 Support
@@ -121,6 +137,18 @@ The official web pages for POIU are:
 
 The proper mailing-lists on which to ask questions are
 `asdf-devel` and `qitab-devel`, both on `common-lisp.net`.
+
+
+Testing
+-------
+
+Before to test, you must download the test files, e.g. with
+    mkdir -p ~/src/fare
+    git checkout https://github.com/fare/bastiat.org ~/src/fare/bastiat.org
+    sbcl --load ~/quicklisp/setup --eval '(ql:quickload :exscribe)' --quit
+
+To run the test, use
+    sh test.lisp
 
 
 Determinism
