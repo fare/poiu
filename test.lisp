@@ -6,6 +6,16 @@
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac 2>&1 | tee foo ; exit
 
+;; NB:
+;; 1- You need to download exscribe and its dependencies.
+;;    Quicklisp can do it for you: search for Quicklisp below.
+;; 2- For test data, checkout https://github.com/fare/bastiat.org
+;;    and override the path in variable *bastiat* below.
+;; 3- To check that the tests pass without POIU,
+;;    just comment out every line where "poiu" appears below.
+
+
+;;; First, bootstrap by loading the latest ASDF itself, if not already present.
 (in-package :cl-user)
 
 (setf *load-verbose* nil
@@ -17,34 +27,36 @@
 #-asdf2 (load "../asdf/build/asdf.lisp")
 
 (asdf:load-system :asdf)
+(in-package :asdf)
+
+;;; Second, some configuration.
+
+;; OVERRIDE THE VARIABLE BELOW TO REFLECT WHERE YOU PUT THE TEST FILES
+;; e.g. use a defparameter in cl-user before you load this file, or edit the line below.
+(defvar cl-user::*bastiat* (uiop:subpathname (user-homedir-pathname) "src/fare/bastiat.org/"))
+;; PS: DO NOT forget the ending / for a directory in Lisp namestring syntax,
+;; or you'll have "interesting" problems.
+
+;; Use Quicklisp-loaded libraries when available.
+;; NB: You must still prime Quicklisp with (ql:quickload :exscribe) to have it download the sources;
+;; but you can rm -rf ~/.cache/common-lisp/ afterwards to clean away the fasls.
+(if-let (qldir (probe-file (subpathname (user-homedir-pathname) "quicklisp/setup.lisp")))
+  (load qldir))
+
+
+;;; Third, load POIU.
+
 (asdf:load-system :poiu)
-
-(in-package :poiu) ;; in case there was a punt, be in the NEW asdf package.
-
-(assert (can-fork-p))
-
-(pushnew :DBG *features*)
-(defmacro DBG (tag &rest exprs)
-  "simple debug statement macro:
-outputs a tag plus a list of source expressions and their resulting values, returns the last values"
-  (let ((res (gensym))(f (gensym)))
-  `(let ((,res))
-    (flet ((,f (fmt &rest args) (apply #'format *trace-output* fmt args)))
-      (,f "~&~A~%" ,tag)
-      ,@(mapcan
-         #'(lambda (x)
-            `((,f "~&  ~S => " ',x)
-              (,f "~{~S~^ ~}~%" (setf ,res (multiple-value-list ,x)))))
-         exprs)
-      (apply 'values ,res)))))
-
+(format *error-output* "~&POIU ~A~%" (component-version (find-system "poiu")))
+(assert (poiu/fork:can-fork-p))
 
 (setf *load-verbose* t
       *load-print* t
       *compile-verbose* t
       *compile-print* t)
 
-(format *error-output* "~&POIU ~A~%" (component-version (find-system "poiu")))
+;;; Fourth, enable some debugging.
+(uiop:uiop-debug)
 
 #+(or)
 (trace
@@ -62,10 +74,7 @@ outputs a tag plus a list of source expressions and their resulting values, retu
 ;;#+allegro (trace posix-fork posix-wexitstatus posix-waitpid excl::getpid quit)
 ;;#+clisp (trace asdf::read-file-form asdf::read-file-forms)
 
-(defvar *fare* (uiop/common-lisp:user-homedir-pathname))
-(defun subnamestring (base sub)
-  (namestring (uiop:subpathname base sub)))
-
+;;; Fifth, run the actual test
 (block nil
   (handler-bind ((error #'(lambda (condition)
                             (format t "~&ERROR:~%~A~%" condition)
@@ -75,14 +84,14 @@ outputs a tag plus a list of source expressions and their resulting values, retu
                             (return))))
     (load-system
      :exscribe ;; :verbose t
-     :force :all
-     :plan-class 'parallel-plan
-     :breadcrumbs-to "/tmp/breadcrumbs.text")
+     :plan-class 'poiu:parallel-plan :breadcrumbs-to "/tmp/breadcrumbs.text"
+     :force :all)
     (funcall (uiop:find-symbol* :process-command-line :exscribe)
-             `("-I" ,(subnamestring *fare* "fare/www/")
-               "-o" "-" "-H" ,(subnamestring *fare* "fare/www/index.scr")))))
+             `("-I" ,(namestring cl-user::*bastiat*)
+               "-o" "-" "-H" ,(namestring (subpathname cl-user::*bastiat* "en/index.scr"))))))
 
+;;; Sixth and lastly, print some statistics and quit.
 (format t "~&~S~%" (uiop:implementation-identifier))
-(format t "~&Compiled with as many as ~D forked subprocesses~%" *max-actual-forks*)
+(format t "~&Compiled with as many as ~D forked subprocesses~%" poiu/fork:*max-actual-forks*)
 
 (quit 0)
