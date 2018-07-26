@@ -9,7 +9,7 @@ in parallel with other operations (compilation or loading).
 However, it will load FASLs serially as they become available."
   :depends-on ((:version "asdf" "3.3.0")
                (:feature (:and :sbcl :os-unix) (:require :sb-posix)))
-  :version "1.33"
+  :version "1.34"
   :components
   ((:file "queue")
    (:file "fork")
