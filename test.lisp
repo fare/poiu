@@ -1,8 +1,8 @@
 ":" ; : "-*- Lisp -*-" \
-; case "${1:-sbcl}" in (sbcl) sbcl --load test.lisp \
-;; (allegro) alisp -L test.lisp \
-;; (ccl) ../single-threaded-ccl/stccl --load test.lisp \
-;; (clisp) clisp -i test.lisp \
+; case "${1:-sbcl}" in (sbcl) sbcl --load "$0" \
+;; (allegro) alisp -L "$0" \
+;; (ccl) ../single-threaded-ccl/stccl --load "$0" \
+;; (clisp) clisp -i "$0" \
 ;; (*) echo "Unrecognized/unsupported Lisp: $1" ; exit 42
 ;; esac 2>&1 | tee foo ; exit
 
@@ -77,10 +77,9 @@
 ;;; Fifth, run the actual test
 (block nil
   (handler-bind ((error #'(lambda (condition)
-                            (format t "~&ERROR:~%~A~%" condition)
+                            (format! t "~&ERROR:~%~A~%" condition)
                             (print-backtrace :stream *standard-output*)
-                            (format t "~&ERROR:~%~A~%" condition)
-                            (finish-output)
+                            (format! t "~&ERROR:~%~A~%" condition)
                             (return))))
     (load-system
      :exscribe ;; :verbose t
