@@ -163,8 +163,8 @@
 
 (defmethod make-plan :around (plan-class (o operation) (c component) &key &allow-other-keys)
   (let ((plan (call-next-method)))
-    (warn "~S" (summarize-plan plan))
     (when (typep plan 'parallel-plan)
+      (warn "~S" (summarize-plan plan))
       ;; make a second plan and destructively check it
       (check-invariants (call-next-method)))
     plan))
