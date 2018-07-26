@@ -47,7 +47,7 @@
 ;;; Third, load POIU.
 
 (asdf:load-system :poiu)
-(format *error-output* "~&POIU ~A~%" (component-version (find-system "poiu")))
+(format *error-output* "~&ASDF ~A  POIU ~A~%" (asdf-version) (component-version (find-system "poiu")))
 (assert (poiu/fork:can-fork-p))
 
 (setf *load-verbose* t
