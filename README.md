@@ -5,14 +5,14 @@ POIU is an ASDF extension that will parallelize your Common Lisp builds,
 for some build speedup, both through parallelization and reduced GC.
 
 
-WARNING
--------
+Version Compatibility
+---------------------
 
-POIU 1.34 is broken: It requires more changes to actually work with a recent
-ASDF (3.3.2 or later), yet is modified enough to not work with older ASDF.
+POIU 1.34 reportedly passed its test of building and using Exscribe
+with ASDF 3.3.2.5 on SBCL 1.4.4 on Linux x86-64.
 
-For a working combination, try POIU 1.31.1 and ASDF 3.1.7 -- which if your
-implementation comes with a more recent ASDF
+For an older working combination, try POIU 1.31.1 and ASDF 3.1.7
+-- which if your implementation comes with a more recent ASDF
 (as checked by `(require :asdf) (asdf:asdf-version)`) may require
 overriding your implementation's ASDF e.g. using the `tools/install-asdf.lisp`
 script from the ASDF source repository at
@@ -118,7 +118,7 @@ Installation
 ------------
 
 POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0,
-but for bug fix purposes, we recommend ASDF 3.3.2.2 or later.
+but for bug fix purposes, we recommend ASDF 3.3.2.5 or later.
 
 To use POIU, just make sure you use a recent enough ASDF,
 and in your build scripts, after you `(require "asdf")`
