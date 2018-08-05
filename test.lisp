@@ -56,7 +56,8 @@
       *compile-print* t)
 
 ;;; Fourth, enable some debugging.
-(uiop:uiop-debug)
+;; uiop-directory assumes UIOP 3.3.2.5 or later, despite an initial ASDF possibly earlier than that.
+(uiop:uiop-debug :utility-file (uiop:subpathname (uiop:uiop-directory) "contrib/debug.lisp"))
 
 #+(or)
 (trace
