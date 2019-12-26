@@ -4,14 +4,22 @@ POIU: Parallel Operator on Independent Units
 POIU is an ASDF extension that will parallelize your Common Lisp builds,
 for some build speedup, both through parallelization and reduced GC.
 
+POIU builds a precise and complete dependency graph,
+based on which it schedules performing of actions by worker subprocesses.
+This dependency graph can also be extracted and used for other purposes.
+
 
 Version Compatibility
 ---------------------
 
 POIU 1.34 reportedly passed its test of building and using Exscribe
 with ASDF 3.3.2.5 on SBCL 1.4.4 on Linux x86-64.
+Still, support for ASDF 3.3 is considered incomplete.
+See TODO section at the end.
+Please report issues you experience, and particularly so
+if you can isolate minimal circumstances that trigger those issues.
 
-For an older working combination, try POIU 1.31.1 and ASDF 3.1.7
+For an older known-working combination, try POIU 1.31.1 and ASDF 3.1.7
 -- which if your implementation comes with a more recent ASDF
 (as checked by `(require :asdf) (asdf:asdf-version)`) may require
 overriding your implementation's ASDF e.g. using the `tools/install-asdf.lisp`
@@ -22,33 +30,42 @@ script from the ASDF source repository at
 Introduction
 ------------
 
-POIU is a modification of ASDF that may operate on your systems in parallel.
-This version of POIU was designed to work with ASDF no earlier than specified.
+POIU is a modification of ASDF that may `operate` on your systems in parallel.
+Each version of POIU is designed to work with a matching version of ASDF;
+it will not work on older versions, and
+may or may not work on more recent versions.
 
-POIU will notably compile each Lisp file in its own forked process,
-in parallel with other operations (compilation or loading).
-However, it will load FASLs serially as they become available.
+POIU performs file-creating actions such as compilation of Lisp files
+each in its own forked process, in parallel with other such operations.
+On the other hand, in-image actions such as loading of FASLs happens serially
+as the dependencies for these actions are completed.
 
-POIU will only make a difference with respect to ASDF if the dependencies
-are not serial (i.e. no difference for systems using `:serial t` everywhere).
-You can however use Andreas Fuchs's `ASDF-DEPENDENCY-GROVEL` to autodetect
-minimal dependencies from an ASDF system (or a set of multiple such).
+POIU will only make a difference with respect to ASDF
+if the dependencies are not serial. Thus,
+there will be no behavioral difference within
+systems that use `:serial t` everywhere.
+
+You can however use Andreas Fuchs's
+[`ASDF-DEPENDENCY-GROVEL`](https://gitlab.common-lisp.net/xcvb/asdf-dependency-grovel)
+to autodetect minimal dependencies from an ASDF system (or a set of multiple such).
 
 POIU may speed up compilation by utilizing all CPUs of an SMP machine.
 POIU may also reduce the memory pressure on the main (loading) process
-by off-loading the compilation onto forked subprocesses.
+by off-loading the compilation onto forked subprocesses;
+this could help reduce the performance hit of Garbage Collection (GC).
 POIU will enforce separation between compile- and load- time environments,
-helping you detect when `:LOAD-TOPLEVEL` is missing in `EVAL-WHEN`'s,
+helping you detect
+[when `:LOAD-TOPLEVEL` is missing in `EVAL-WHEN`'s](https://fare.livejournal.com/146698.html),
 as needed for incremental compilation even with vanilla ASDF.
 POIU will also catch *some* missing dependencies as exist between the
-files that it will happen to compile in parallel (but may not catch all
-dependencies that may otherwise be missing from your system).
+files that it will happen to compile in parallel. But POIU will not catch all
+dependencies that may otherwise be missing from some systems.
 
 When a compilation fails in a parallel process, POIU will retry compiling
 in the main (loading) process so you get the usual ASDF error behavior,
-with a chance to debug the issue and restart the operation.
+with a chance to debug the issue and restart the operation at your regular REPL.
 
-POIU was currently only made to work with SBCL, CCL and CLISP.
+POIU was currently only made to work with Allegro, CCL, CLISP and SBCL.
 [NB: the CLISP port is somewhat less stable.]
 Porting to another Lisp implementation that supports ASDF
 should not be difficult.
@@ -85,7 +102,7 @@ to minimize the dependencies in your system.
 
 POIU was initially written by Andreas Fuchs in 2007
 as part of an experiment funded by ITA Software, Inc.
-It was subsequently modified by Francois-Rene Rideau at ITA Software,
+It was subsequently maintained by Francois-Rene Rideau at ITA Software,
 who adapted POIU for use with XCVB in 2009,
 wrote the CCL and CLISP ports, moved code from POIU to ASDF, and
 eventually rewrote both of them together in a simpler way.
@@ -118,7 +135,7 @@ Installation
 ------------
 
 POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0,
-but for bug fix purposes, we recommend ASDF 3.3.2.5 or later.
+but for bug fix purposes, we recommend ASDF 3.3.3 or later.
 
 To use POIU, just make sure you use a recent enough ASDF,
 and in your build scripts, after you `(require "asdf")`
@@ -128,8 +145,6 @@ but before you build the rest of your software, include the line:
 
 It automatically will hook into `asdf::*plan-class*`,
 though you can reset it.
-
-
 
 
 Support
@@ -146,14 +161,17 @@ The proper mailing-lists on which to ask questions are
 Testing
 -------
 
-Before to test, you must download the test files, e.g. with
+Before to test, you must download the test files, e.g. with:
+```
     mkdir -p ~/src/fare
     git checkout https://github.com/fare/bastiat.org ~/src/fare/bastiat.org
     sbcl --load ~/quicklisp/setup --eval '(ql:quickload :exscribe)' --quit
+```
 
-To run the test, use
+To run the test, use:
+```
     sh test.lisp
-
+```
 
 Determinism
 -----------
@@ -162,4 +180,48 @@ POIU uses convergent parallelism by default to preserve some determinism, but
 currently it's configured to be deterministic *given the incremental state*,
 instead of deterministic *given the source only*,
 which would be safer though slower.
-TODO: make the latter the default.
+
+TODO: make the latter the default?
+
+
+TODO: Support Build Phases
+--------------------------
+
+ASDF 3.3 introduced a builtin notion of multiple build phases in a same session.
+These phases properly model system-definition time dependencies,
+typically using using `defsystem-depends-on`, though for backward-compatibility,
+ASDF also recognizes manual calls to `load-system` or `operate` within a `.asd` file.
+POIU needs to be updated to support this notion.
+
+POIU uses mutable hash-tables to represent "the" dependency graph, and
+currently copies that graph once at "the" start of the build.
+To properly handle multiple build phases,
+POIU may have to maintain two explicit distinct graphs:
+
+  1. the graph of "all the dependencies",
+     which only grows as more are discovered, and
+
+  2. the graph for "all pending dependencies",
+     which grows with discovery and shrinks when performing actions.
+
+The latter graph is used to schedule actions, while the former can be used
+to report progress, verify consistency, display dependencies, etc.
+Because of the multiple build phases, you can't actually precompute the former
+then copy it into the latter before you start `perform`'ing the plan;
+instead, you must start both from an empty state, and compute them concurrently
+as you both discover dependencies and perform those from earlier phases.
+
+Note that due to how `defsystem-depends-on` dependencies work,
+to even compute the graph, you need to perform all actions in all phases
+except possibly the very last one.
+You could imaginably cache the results of this graph off-image,
+but there still needs be some image that builds all those systems
+with matching source code versions before you may prime the cache
+and later use it.
+
+To display the graph, you could output `dot` using `CL-DOT`,
+or some JSON data for use with JavaScript D3.
+Ideally, you'd probably want to compute the maximum build phase depth,
+then pick an according color scheme wherein nodes and dependency arrows
+get a different color based on how deep a phase they are built at,
+with extra width for a defsystem-depends-on dependency.
