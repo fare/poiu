@@ -32,7 +32,7 @@
 (defun disable-other-waiters ()
   ;; KLUDGE: Try to undo problems caused by run-program.
   ;; There will still be a race condition if some action calls run-program at load-time.
-  ;; But this work-around makes it is safe to call run-program before to invoke poiu
+  ;; But this work-around makes it safe to call run-program before to invoke poiu
   ;; (it is of course safe after). The true fix to allow run-program to be invoked
   ;; at load-time would be to have an API for a process-waiting callbacks.
   #+(and sbcl unix)
@@ -41,7 +41,7 @@
 (defun ncpus ()
   (let ((ncpus (cond ((featurep :linux)
                       (run-program '("grep" "-c" "^processor.:" "/proc/cpuinfo") :output :string))
-                     ((featurep :darwin)
+                     ((featurep :bsd) ;; reported to work on :darwin :freebsd :netbsd :openbsd.
                       (run-program '("sysctl" "-n" "hw.ncpu") :output :string))
                      ((os-windows-p)
                       (getenv "NUMBER_OF_PROCESSORS")))))

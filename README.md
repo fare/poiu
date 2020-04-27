@@ -12,9 +12,11 @@ This dependency graph can also be extracted and used for other purposes.
 Version Compatibility
 ---------------------
 
-POIU 1.34 reportedly passed its test of building and using Exscribe
-with ASDF 3.3.2.5 on SBCL 1.4.4 on Linux x86-64.
-Still, support for ASDF 3.3 is considered incomplete.
+POIU 1.34.1 reportedly passed its test of building and using Exscribe
+with ASDF 3.3.4.1 on SBCL 2.0.3.62 on Linux x86-64.
+Still, support for ASDF 3.3 is considered incomplete, with many spurious warnings,
+as POIU is confused by ASDF's support for multiple phases of invocation in one session.
+
 See TODO section at the end.
 Please report issues you experience, and particularly so
 if you can isolate minimal circumstances that trigger those issues.
@@ -134,7 +136,7 @@ in which case POIU defaults the `*max-forks*` to 16.
 Installation
 ------------
 
-POIU 1.34 depends on the new plan-making internals of ASDF 3.3.0,
+POIU 1.34.1 depends on the new plan-making internals of ASDF 3.3.0,
 but for bug fix purposes, we recommend ASDF 3.3.3 or later.
 
 To use POIU, just make sure you use a recent enough ASDF,
