@@ -175,6 +175,7 @@ To run the test, use:
     sh test.lisp
 ```
 
+
 Determinism
 -----------
 
@@ -227,3 +228,11 @@ Ideally, you'd probably want to compute the maximum build phase depth,
 then pick an according color scheme wherein nodes and dependency arrows
 get a different color based on how deep a phase they are built at,
 with extra width for a defsystem-depends-on dependency.
+
+
+As seen on TV!
+--------------
+
+Code from POIU could be seen in the
+[Swedish TV series ‘Äkta Människor’](https://moviecode.tumblr.com/post/88245186920/some-lisp-code-taken-from-swedish-tv-series-%C3%A4kta), in
+[in Season 2 Episode 6 around 17:59](https://moviecode.tumblr.com/post/88826139010/in-real-humans-%C3%A4kta-m%C3%A4nniskor-some-common-lisp).
