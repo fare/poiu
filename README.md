@@ -235,4 +235,4 @@ As seen on TV!
 
 Code from POIU could be seen in the
 [Swedish TV series ‘Äkta Människor’](https://moviecode.tumblr.com/post/88245186920/some-lisp-code-taken-from-swedish-tv-series-%C3%A4kta), in
-[in Season 2 Episode 6 around 17:59](https://moviecode.tumblr.com/post/88826139010/in-real-humans-%C3%A4kta-m%C3%A4nniskor-some-common-lisp).
+[Season 2 Episode 6 around 17:59](https://moviecode.tumblr.com/post/88826139010/in-real-humans-%C3%A4kta-m%C3%A4nniskor-some-common-lisp).
